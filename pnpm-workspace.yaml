@@ -1,0 +1,7 @@
+packages:
+  - 'apps/**'
+  - 'packages/*'
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@hono/node-server@2.1.1'

@@ -1,0 +1,16 @@
+services:
+  postgres-db:
+    image: postgres:16-alpine
+    container_name: local_postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: Passw0rd
+      POSTGRES_DB: events
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:

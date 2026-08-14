@@ -1,0 +1,9 @@
+
+# dev
+.vscode/*
+node_modules/
+.env
+.env.production
+
+# build
+dist

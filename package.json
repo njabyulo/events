@@ -1,0 +1,24 @@
+{
+  "name": "events",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev:apps:start": "",
+    "dev:db:start": "docker compose up -d",
+    "dev:db:stop": "docker compose down",
+    "dev:db:reset": "docker compose down -v",
+    "build": ""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.7.0",
+      "onFail": "download"
+    }
+  },
+  "type": "module"
+}
