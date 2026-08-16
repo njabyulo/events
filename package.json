@@ -12,6 +12,7 @@
     "dev:db:reset": "docker compose down -v && pnpm dev:db:start",
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:integration": "turbo run test:integration",
     "typecheck": "turbo run typecheck"
   },
   "keywords": [],
