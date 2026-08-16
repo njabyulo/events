@@ -6,11 +6,16 @@
     "./events": {
       "types": "./dist/events.d.mts",
       "default": "./dist/events.mjs"
+    },
+    "./outbox": {
+      "types": "./dist/outbox.d.mts",
+      "default": "./dist/outbox.mjs"
     }
   },
   "scripts": {
     "dev:db:generate": "drizzle-kit generate --config=drizzle-dev.config.ts",
     "dev:db:migrate": "drizzle-kit migrate --config=drizzle-dev.config.ts",
+    "test:integration": "vitest run tests/integration",
     "typecheck": "tsc --noEmit",
     "build": "pnpm typecheck && tsdown"
   },
@@ -29,6 +34,7 @@
     "drizzle-kit": "1.0.0-rc.4",
     "tsdown": "^0.22.14",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }
