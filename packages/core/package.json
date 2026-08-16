@@ -1,0 +1,27 @@
+{
+  "name": "core",
+  "version": "1.0.0",
+  "description": "",
+  "exports": {
+    "./events": {
+      "types": "./dist/events.d.mts",
+      "default": "./dist/events.mjs"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && tsdown"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "database": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2"
+  }
+}
