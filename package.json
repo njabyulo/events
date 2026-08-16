@@ -4,11 +4,15 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev:apps:start": "",
-    "dev:db:start": "docker compose up -d",
+    "dev": "pnpm dev:db:start && turbo run dev",
+    "dev:db:generate": "turbo run dev:db:generate",
+    "dev:db:migrate": "turbo run dev:db:migrate",
+    "dev:db:start": "docker compose up -d --wait && turbo run dev:db:migrate",
     "dev:db:stop": "docker compose down",
-    "dev:db:reset": "docker compose down -v",
-    "build": ""
+    "dev:db:reset": "docker compose down -v && pnpm dev:db:start",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
   },
   "keywords": [],
   "author": "",
@@ -20,5 +24,8 @@
       "onFail": "download"
     }
   },
-  "type": "module"
+  "type": "module",
+  "devDependencies": {
+    "turbo": "^2.10.10"
+  }
 }
