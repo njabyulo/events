@@ -6,9 +6,14 @@
     "./events": {
       "types": "./dist/events.d.mts",
       "default": "./dist/events.mjs"
+    },
+    "./gmail": {
+      "types": "./dist/gmail.d.mts",
+      "default": "./dist/gmail.mjs"
     }
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "pnpm typecheck && tsdown"
   },
@@ -22,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^26.2.0",
     "tsdown": "^0.22.14",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   }
 }

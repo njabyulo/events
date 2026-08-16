@@ -3,6 +3,7 @@ import { defineConfig } from "tsdown";
 export default defineConfig({
   entry: {
     events: "src/events/events.service.ts",
+    gmail: "src/gmail/index.ts",
   },
   format: ["esm"],
   platform: "node",
