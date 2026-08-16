@@ -38,6 +38,14 @@ test("GitHub adapter verifies raw bytes and normalizes the event", async () => {
   expect(event.sourceEventType).toBe("delete");
   expect(event.type).toBe("branch.deleted");
   expect(event.attributes.repository).toBe("njabulo/events");
+  expect(event.links).toContainEqual({
+    kind: "repository",
+    value: "njabulo/events",
+  });
+  expect(event.detail).toMatchObject({
+    sourceEventType: "delete",
+    raw: { action: "deleted" },
+  });
 });
 
 test("GitHub adapter rejects a signature for different raw bytes", async () => {
@@ -49,6 +57,40 @@ test("GitHub adapter rejects a signature for different raw bytes", async () => {
   await expect(
     githubWebhookAdapter.verify(request(headers, '{"action":"deleted"}')),
   ).rejects.toMatchObject({ code: "invalid_signature" });
+});
+
+test("GitHub adapter accepts form payloads and emits semantic merged events", async () => {
+  const payload = {
+    action: "closed",
+    pull_request: {
+      number: 42,
+      merged: true,
+      merged_at: "2026-08-15T09:58:00Z",
+      merge_commit_sha: "abc123",
+    },
+    repository: { full_name: "njabulo/events" },
+    sender: { login: "njabulo" },
+  };
+  const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+  const rawBody = new TextEncoder().encode(body);
+  const headers = new Headers({
+    "content-type": "application/x-www-form-urlencoded",
+    "x-github-delivery": "delivery-merged-1",
+    "x-github-event": "pull_request",
+    "x-hub-signature-256": hmacSha256(secret, rawBody),
+  });
+  const input = request(headers, body);
+
+  await githubWebhookAdapter.verify(input);
+  const event = await githubWebhookAdapter.normalize(input);
+
+  expect(event.type).toBe("pull_request.merged");
+  expect(event.occurredAt).toBe("2026-08-15T09:58:00.000Z");
+  expect(event.links).toEqual(expect.arrayContaining([
+    { kind: "repository", value: "njabulo/events" },
+    { kind: "pull_request", value: "njabulo/events#42" },
+    { kind: "commit_sha", value: "abc123" },
+  ]));
 });
 
 test("generic adapter verifies timestamp plus raw body", async () => {

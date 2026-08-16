@@ -1,5 +1,11 @@
 import type { ErrorHandler, NotFoundHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
+import {
+  EventStoreUnavailableError,
+  EventValidationError,
+} from "core/events";
+import { GmailMessageError } from "core/gmail";
+import { GmailSourceError } from "../modules/events/sources/gmail/gmail.config.js";
 import { WebhookError } from "../modules/events/webhooks/webhook.types.js";
 import type { AppEnvironment } from "./app.types.js";
 
@@ -18,6 +24,23 @@ export const apiErrorHandler: ErrorHandler<AppEnvironment> = (error, c) => {
 
   if (error instanceof WebhookError) {
     return c.json(errorBody(error.code, error.message, requestId), error.status);
+  }
+
+  if (error instanceof EventValidationError) {
+    return c.json(errorBody(error.code, error.message, requestId), 400);
+  }
+
+  if (error instanceof EventStoreUnavailableError) {
+    console.error("Event store unavailable", { requestId, cause: error.cause });
+    return c.json(errorBody("event_store_unavailable", error.message, requestId), 503);
+  }
+
+  if (error instanceof GmailSourceError) {
+    return c.json(errorBody(error.code, error.message, requestId), error.status);
+  }
+
+  if (error instanceof GmailMessageError) {
+    return c.json(errorBody("invalid_gmail_message", error.message, requestId), 503);
   }
 
   if (error instanceof HTTPException) {

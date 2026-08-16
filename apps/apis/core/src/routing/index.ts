@@ -5,6 +5,7 @@ import { secureHeaders } from "hono/secure-headers";
 import type { AppEnvironment } from "../middleware/app.types.js";
 import { apiErrorHandler, apiNotFoundHandler } from "../middleware/error.handlers.js";
 import { eventsRouter } from "../modules/events/events.routes.js";
+import { sourcesRouter } from "../modules/events/sources/sources.routes.js";
 
 export const app = new Hono<AppEnvironment>();
 
@@ -14,7 +15,8 @@ app.use("*", secureHeaders());
 
 app.get("/", (c) => c.text("Hello Hono!"));
 
-app.route("/events", eventsRouter);
+app.route("/v1/events", eventsRouter);
+app.route("/v1/sources", sourcesRouter);
 
 app.notFound(apiNotFoundHandler);
 app.onError(apiErrorHandler);

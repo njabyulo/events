@@ -15,17 +15,22 @@ export const postWebhookHandler = async (c: Context<WebhookEnvironment>) => {
     subject: normalized.subject,
     summary: normalized.summary,
     occurredAt: normalized.occurredAt,
+    correlationId: normalized.correlationId,
+    causationEventId: normalized.causationEventId,
+    traceId: normalized.traceId,
     detail: normalized.detail,
     attributes: {
       ...normalized.attributes,
       source_key: source.key,
       source_event_type: normalized.sourceEventType,
     },
+    links: normalized.links,
   });
 
   return c.json({
     data: {
       eventId: result.id,
+      sourceEventId: result.sourceEventId,
       duplicate: !result.inserted,
     },
   }, result.inserted ? 202 : 200);

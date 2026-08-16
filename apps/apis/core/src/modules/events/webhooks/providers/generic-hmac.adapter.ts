@@ -72,8 +72,14 @@ export const genericHmacWebhookAdapter: WebhookAdapter = {
       subject: optionalString(payload.subject),
       summary: optionalString(payload.summary),
       occurredAt: occurredAt(payload.occurredAt, receivedAt),
+      correlationId: optionalString(payload.correlationId),
+      causationEventId: optionalString(payload.causationEventId),
+      traceId: optionalString(payload.traceId),
       detail: asJsonObject(payload.detail) ?? payload,
       attributes: asJsonObject(payload.attributes) ?? {},
+      links: Array.isArray(payload.links)
+        ? payload.links as Array<{ kind: string; value: string }>
+        : [],
     } satisfies NormalizedWebhookEvent;
   },
 };

@@ -8,7 +8,7 @@ import { WebhookError } from "./webhook.types.js";
 export const webhooksRouter = new Hono<WebhookEnvironment>();
 
 webhooksRouter.post(
-  "/:sourceKey",
+  "/:sourceKey/webhook",
   bodyLimit({
     maxSize: maxBodyBytes(),
     onError: () => {

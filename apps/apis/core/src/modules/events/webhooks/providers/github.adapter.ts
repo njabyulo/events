@@ -32,6 +32,15 @@ export const githubWebhookAdapter: WebhookAdapter = {
     }
 
     const event = normalizeGithubEvent(sourceEventType, payload, receivedAt.toISOString());
+    const links = [
+      event.repository && { kind: "repository", value: event.repository },
+      event.repository && event.prNumber !== null && {
+        kind: "pull_request",
+        value: `${event.repository}#${event.prNumber}`,
+      },
+      event.commitSha && { kind: "commit_sha", value: event.commitSha },
+      event.deploymentId && { kind: "deployment_id", value: event.deploymentId },
+    ].filter((link): link is { kind: string; value: string } => Boolean(link));
 
     return {
       sourceEventId,
@@ -41,7 +50,13 @@ export const githubWebhookAdapter: WebhookAdapter = {
       subject: event.subject,
       summary: event.summary,
       occurredAt: event.occurredAt,
-      detail: payload,
+      correlationId: null,
+      causationEventId: null,
+      traceId: null,
+      detail: {
+        sourceEventType,
+        raw: payload,
+      },
       attributes: {
         environment: event.environment,
         service: event.service,
@@ -51,6 +66,7 @@ export const githubWebhookAdapter: WebhookAdapter = {
         deployment_url: event.deploymentUrl,
         pr_number: event.prNumber,
       },
+      links,
     };
   },
 };

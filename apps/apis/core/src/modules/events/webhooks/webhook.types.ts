@@ -23,8 +23,12 @@ export type NormalizedWebhookEvent = {
   subject: string | null;
   summary: string | null;
   occurredAt: string;
+  correlationId: string | null;
+  causationEventId: string | null;
+  traceId: string | null;
   detail: JsonObject;
   attributes: JsonObject;
+  links: Array<{ kind: string; value: string }>;
 };
 
 export interface WebhookAdapter {
