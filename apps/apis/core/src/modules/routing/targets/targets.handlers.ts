@@ -55,7 +55,3 @@ export const testTargetHandler = async (c: Context) => {
     ),
   }, 202);
 };
-
-export const listQueuesHandler = async (c: Context) => c.json({
-  data: await targetsService.listQueues(),
-});

@@ -6,6 +6,14 @@ import {
 } from "core/events";
 import { GmailMessageError } from "core/gmail";
 import {
+  QueueConflictError,
+  QueueInUseError,
+  QueueLeaseConflictError,
+  QueueNotFoundError,
+  QueueStoreUnavailableError,
+  QueueValidationError,
+} from "core/queues";
+import {
   RoutingConflictError,
   RoutingNotFoundError,
   RoutingStoreUnavailableError,
@@ -34,6 +42,27 @@ export const apiErrorHandler: ErrorHandler<AppEnvironment> = (error, c) => {
 
   if (error instanceof EventValidationError) {
     return c.json(errorBody(error.code, error.message, requestId), 400);
+  }
+
+  if (error instanceof QueueValidationError) {
+    return c.json(errorBody(error.code, error.message, requestId), 400);
+  }
+
+  if (error instanceof QueueNotFoundError) {
+    return c.json(errorBody(error.code, error.message, requestId), 404);
+  }
+
+  if (
+    error instanceof QueueLeaseConflictError
+    || error instanceof QueueInUseError
+    || error instanceof QueueConflictError
+  ) {
+    return c.json(errorBody(error.code, error.message, requestId), 409);
+  }
+
+  if (error instanceof QueueStoreUnavailableError) {
+    console.error("Queue store unavailable", { requestId, cause: error.cause });
+    return c.json(errorBody(error.code, error.message, requestId), 503);
   }
 
   if (error instanceof RoutingValidationError) {
