@@ -10,6 +10,18 @@
     "./outbox": {
       "types": "./dist/outbox.d.mts",
       "default": "./dist/outbox.mjs"
+    },
+    "./routing": {
+      "types": "./dist/routing.d.mts",
+      "default": "./dist/routing.mjs"
+    },
+    "./rules": {
+      "types": "./dist/rules.d.mts",
+      "default": "./dist/rules.mjs"
+    },
+    "./targets": {
+      "types": "./dist/targets.d.mts",
+      "default": "./dist/targets.mjs"
     }
   },
   "scripts": {

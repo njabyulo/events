@@ -78,6 +78,8 @@ export const outboxTable = pgTable("outbox", {
   index("outbox_claim_idx")
     .on(table.available_at)
     .where(sql`${table.status} in ('pending', 'failed')`),
+  index("outbox_router_claim_idx")
+    .on(table.status, table.available_at, table.locked_until),
 ]);
 
 export const sourceCursorsTable = pgTable("source_cursors", {
