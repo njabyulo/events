@@ -1,6 +1,7 @@
 import { EventValidationError, type EventEnvelope } from "core/events";
 import type { Context } from "hono";
 import { eventsService } from "../events.dependencies.js";
+import { routerService } from "../../routing/routing.dependencies.js";
 
 export const getEventsHandler = async (c: Context) => {
   const events = await eventsService.getEvents();
@@ -18,6 +19,17 @@ export const getEventHandler = async (c: Context) => {
   }
 
   return c.json({ data: event });
+};
+
+export const getEventRoutesHandler = async (c: Context) => {
+  const id = c.req.param("id") ?? "";
+  const event = await eventsService.getEventById(id);
+  if (!event) {
+    return c.json({
+      error: { code: "event_not_found", message: "Event does not exist" },
+    }, 404);
+  }
+  return c.json({ data: await routerService.getEventRouting(id) });
 };
 
 export const postEventHandler = async (c: Context) => {

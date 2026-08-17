@@ -5,6 +5,12 @@ import {
   EventValidationError,
 } from "core/events";
 import { GmailMessageError } from "core/gmail";
+import {
+  RoutingConflictError,
+  RoutingNotFoundError,
+  RoutingStoreUnavailableError,
+  RoutingValidationError,
+} from "core/routing";
 import { GmailSourceError } from "../modules/events/sources/gmail/gmail.config.js";
 import { WebhookError } from "../modules/events/webhooks/webhook.types.js";
 import type { AppEnvironment } from "./app.types.js";
@@ -28,6 +34,23 @@ export const apiErrorHandler: ErrorHandler<AppEnvironment> = (error, c) => {
 
   if (error instanceof EventValidationError) {
     return c.json(errorBody(error.code, error.message, requestId), 400);
+  }
+
+  if (error instanceof RoutingValidationError) {
+    return c.json(errorBody(error.code, error.message, requestId), 400);
+  }
+
+  if (error instanceof RoutingNotFoundError) {
+    return c.json(errorBody(error.code, error.message, requestId), 404);
+  }
+
+  if (error instanceof RoutingConflictError) {
+    return c.json(errorBody(error.code, error.message, requestId), 409);
+  }
+
+  if (error instanceof RoutingStoreUnavailableError) {
+    console.error("Routing store unavailable", { requestId, cause: error.cause });
+    return c.json(errorBody("routing_store_unavailable", error.message, requestId), 503);
   }
 
   if (error instanceof EventStoreUnavailableError) {

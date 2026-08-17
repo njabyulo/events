@@ -1,20 +1,33 @@
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Client } from "pg";
-import { DATABASE_URL, EVENTS_CHANNEL } from "../events.config.js";
+import { DATABASE_URL, SSE_CHANNEL } from "../events.config.js";
 
 const RECONNECT_DELAY_MS = 5000;
 const HEARTBEAT_INTERVAL_MS = 30000;
 
-const activeClients = new Set<(data: string) => Promise<void>>();
+type ActiveClient = { streamKey: string; send: (data: string) => Promise<void> };
+const activeClients = new Set<ActiveClient>();
+let notificationEngineStarted = false;
 
 function broadcast(payload: string) {
-    for (const sendEvent of activeClients) {
-        sendEvent(payload).catch(() => activeClients.delete(sendEvent));
+    let streamKey: string | undefined;
+    try {
+        const parsed = JSON.parse(payload) as { streamKey?: unknown };
+        if (typeof parsed.streamKey === "string") streamKey = parsed.streamKey;
+    } catch {
+        return;
+    }
+    if (!streamKey) return;
+
+    for (const client of activeClients) {
+        if (client.streamKey !== streamKey) continue;
+        client.send(payload).catch(() => activeClients.delete(client));
     }
 }
 
 function startNotificationEngine() {
+    if (!DATABASE_URL) throw new Error("DATABASE_URL is required for SSE");
     const pgListener = new Client({ connectionString: DATABASE_URL });
     let restartScheduled = false;
 
@@ -30,14 +43,19 @@ function startNotificationEngine() {
     pgListener.on('notification', (msg) => broadcast(msg.payload ?? ''));
 
     pgListener.connect()
-        .then(() => pgListener.query(`LISTEN "${EVENTS_CHANNEL}"`))
-        .then(() => console.log(`Postgres listener active on "${EVENTS_CHANNEL}"`))
+        .then(() => pgListener.query(`LISTEN "${SSE_CHANNEL}"`))
+        .then(() => console.log(`SSE listener active on "${SSE_CHANNEL}"`))
         .catch(restart);
 }
 
-startNotificationEngine();
+export function startSseNotificationEngine() {
+    if (notificationEngineStarted) return;
+    notificationEngineStarted = true;
+    startNotificationEngine();
+}
 
 export const streamEventsHandler = (c: Context) => {
+    const streamKey = c.req.param("streamKey") || c.req.query("streamKey") || "triage";
     return streamSSE(c, async (stream) => {
         const sendEvent = async (data: string) => {
             await stream.writeSSE({
@@ -46,11 +64,12 @@ export const streamEventsHandler = (c: Context) => {
             });
         };
 
-        activeClients.add(sendEvent);
+        const client = { streamKey, send: sendEvent };
+        activeClients.add(client);
         console.log(`Client connected. Total: ${activeClients.size}`);
 
         stream.onAbort(() => {
-            activeClients.delete(sendEvent);
+            activeClients.delete(client);
             console.log(`Client disconnected. Total: ${activeClients.size}`);
         });
 

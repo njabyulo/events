@@ -4,6 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { maxEventBodyBytes } from "../events.config.js";
 import {
   getEventHandler,
+  getEventRoutesHandler,
   getEventsHandler,
   postEventHandler,
 } from "./core.handlers.js";
@@ -21,4 +22,5 @@ coreRouter.post(
   }),
   postEventHandler,
 );
+coreRouter.get("/:id/routes", getEventRoutesHandler);
 coreRouter.get("/:id", getEventHandler);
