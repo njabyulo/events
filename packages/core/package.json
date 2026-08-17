@@ -10,6 +10,10 @@
     "./gmail": {
       "types": "./dist/gmail.d.mts",
       "default": "./dist/gmail.mjs"
+    },
+    "./routing": {
+      "types": "./dist/routing.d.mts",
+      "default": "./dist/routing.mjs"
     }
   },
   "scripts": {
