@@ -112,6 +112,21 @@ describe("event ingestion transaction", () => {
     expect(outboxRows.rows).toEqual([{ status: "pending" }]);
   });
 
+  test("returns every event link from the joined read paths", async () => {
+    const result = await eventsRepo.ingestEvent(event());
+
+    const byId = await eventsRepo.getEventById(result.id);
+    const fromList = (await eventsRepo.getEvents()).find(({ id }) => id === result.id);
+
+    for (const stored of [byId, fromList]) {
+      expect(stored?.links).toHaveLength(2);
+      expect(stored?.links).toEqual(expect.arrayContaining([
+        { kind: "repository", value: "owner/repository" },
+        { kind: "pull_request", value: "owner/repository#42" },
+      ]));
+    }
+  });
+
   test.each(["github", "gmail"])(
     "deduplicates repeated %s source events and their outbox rows",
     async (source) => {

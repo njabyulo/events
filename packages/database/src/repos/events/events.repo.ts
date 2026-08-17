@@ -1,11 +1,10 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type {
-  EventLink,
   EventToIngest,
   IngestEventResult,
-  JsonObject,
   StoredEvent,
 } from "./events.types.js";
+import { toStoredEvents } from "./events.mapper.js";
 import { db, type Database } from "../../client.js";
 import {
   eventLinksTable,
@@ -13,9 +12,6 @@ import {
   outboxTable,
   sourceCursorsTable,
 } from "../../schemas/events.schema.js";
-
-type EventRecord = typeof eventsTable.$inferSelect;
-type EventLinkRecord = typeof eventLinksTable.$inferSelect;
 
 const EVENTS_LIST_LIMIT = 100;
 
@@ -25,50 +21,6 @@ export type EventsRepoDependencies = {
 };
 
 export type CreateEventsRepoOptions = Partial<EventsRepoDependencies>;
-
-function asJsonObject(value: unknown): JsonObject {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as JsonObject
-    : {};
-}
-
-function linksByEvent(records: EventLinkRecord[]): Map<number, EventLink[]> {
-  const links = new Map<number, EventLink[]>();
-
-  for (const record of records) {
-    const eventLinks = links.get(record.event_id) ?? [];
-    eventLinks.push({ kind: record.kind, value: record.value });
-    links.set(record.event_id, eventLinks);
-  }
-
-  return links;
-}
-
-function toStoredEvent(event: EventRecord, links: EventLink[] = []): StoredEvent {
-  if (!event.occurred_at || !event.ingested_at) {
-    throw new Error(`Event ${event.id} has invalid timestamps`);
-  }
-
-  return {
-    id: String(event.id),
-    source: event.source,
-    sourceEventId: event.source_event_id,
-    type: event.type,
-    subject: event.subject,
-    actor: event.actor,
-    summary: event.summary,
-    occurredAt: event.occurred_at.toISOString(),
-    ingestedAt: event.ingested_at.toISOString(),
-    correlationId: event.correlation_id,
-    causationEventId: event.causation_event_id === null
-      ? null
-      : String(event.causation_event_id),
-    traceId: event.trace_id,
-    detail: asJsonObject(event.detail),
-    attributes: asJsonObject(event.attributes),
-    links,
-  };
-}
 
 function resolveEventsChannel(value: string | undefined): string {
   const channel = value || "events_ready";
@@ -82,41 +34,51 @@ export class EventsRepo {
   constructor(private readonly dependencies: EventsRepoDependencies) {}
 
   async getEvents(): Promise<StoredEvent[]> {
-    const events = await this.dependencies.database
+    const latestEvents = this.dependencies.database
       .select()
       .from(eventsTable)
       .orderBy(desc(eventsTable.occurred_at), desc(eventsTable.id))
-      .limit(EVENTS_LIST_LIMIT);
+      .limit(EVENTS_LIST_LIMIT)
+      .as("latest_events");
 
-    if (events.length === 0) return [];
+    const rows = await this.dependencies.database
+      .select({
+        event: {
+          id: latestEvents.id,
+          source: latestEvents.source,
+          source_event_id: latestEvents.source_event_id,
+          type: latestEvents.type,
+          subject: latestEvents.subject,
+          actor: latestEvents.actor,
+          summary: latestEvents.summary,
+          occurred_at: latestEvents.occurred_at,
+          ingested_at: latestEvents.ingested_at,
+          correlation_id: latestEvents.correlation_id,
+          causation_event_id: latestEvents.causation_event_id,
+          trace_id: latestEvents.trace_id,
+          detail: latestEvents.detail,
+          attributes: latestEvents.attributes,
+        },
+        link: eventLinksTable,
+      })
+      .from(latestEvents)
+      .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, latestEvents.id))
+      .orderBy(desc(latestEvents.occurred_at), desc(latestEvents.id));
 
-    const linkRecords = await this.dependencies.database
-      .select()
-      .from(eventLinksTable)
-      .where(inArray(eventLinksTable.event_id, events.map((event) => event.id)));
-    const links = linksByEvent(linkRecords);
-
-    return events.map((event) => toStoredEvent(event, links.get(event.id)));
+    return toStoredEvents(rows);
   }
 
   async getEventById(id: string): Promise<StoredEvent | null> {
     const numericId = Number(id);
     if (!Number.isSafeInteger(numericId) || numericId <= 0) return null;
 
-    const [event] = await this.dependencies.database
-      .select()
+    const rows = await this.dependencies.database
+      .select({ event: eventsTable, link: eventLinksTable })
       .from(eventsTable)
-      .where(eq(eventsTable.id, numericId))
-      .limit(1);
+      .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, eventsTable.id))
+      .where(eq(eventsTable.id, numericId));
 
-    if (!event) return null;
-
-    const linkRecords = await this.dependencies.database
-      .select()
-      .from(eventLinksTable)
-      .where(eq(eventLinksTable.event_id, numericId));
-
-    return toStoredEvent(event, linksByEvent(linkRecords).get(numericId));
+    return toStoredEvents(rows)[0] ?? null;
   }
 
   async ingestEvent(event: EventToIngest): Promise<IngestEventResult> {
