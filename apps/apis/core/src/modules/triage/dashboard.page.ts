@@ -64,7 +64,7 @@ export const dashboardHtml = String.raw`<!doctype html>
   </dialog>
   <script type="module">
     const domains = ['career', 'personal', 'unclassified'];
-    const items = new Map();
+    const threads = new Map();
     const board = document.querySelector('#board');
     const login = document.querySelector('#login');
     const status = document.querySelector('#status');
@@ -103,54 +103,55 @@ export const dashboardHtml = String.raw`<!doctype html>
       board.replaceChildren();
       for (const domain of domains) {
         const column = element('section', 'column');
-        const domainItems = [...items.values()]
-          .filter((item) => item.domain === domain && item.status === 'pending')
-          .sort((a, b) => Number(a.id) - Number(b.id));
+        const domainThreads = [...threads.values()]
+          .filter((thread) => thread.domain === domain && thread.status === 'open')
+          .sort((a, b) => new Date(b.lastEventAt) - new Date(a.lastEventAt));
         const head = element('div', 'column-head');
-        head.append(element('span', '', domain), element('span', 'count', String(domainItems.length)));
+        head.append(element('span', '', domain), element('span', 'count', String(domainThreads.length)));
         const list = element('div', 'items');
-        if (domainItems.length === 0) list.append(element('div', 'empty', 'Nothing waiting'));
-        for (const item of domainItems) list.append(renderItem(item));
+        if (domainThreads.length === 0) list.append(element('div', 'empty', 'Nothing waiting'));
+        for (const thread of domainThreads) list.append(renderThread(thread));
         column.append(head, list);
         board.append(column);
       }
     }
 
-    function renderItem(item) {
-      const card = element('article', item.priority);
+    function renderThread(thread) {
+      const card = element('article', thread.priority);
       const meta = element('div', 'meta');
       meta.append(
-        element('span', 'badge ' + item.priority, item.priority),
-        element('time', '', formatTime(item.event.occurredAt)),
+        element('span', 'badge ' + thread.priority, thread.priority),
+        element('time', '', formatTime(thread.lastEventAt)),
       );
-      const title = element('h2', '', item.event.summary || item.event.type);
+      const title = element('h2', '', thread.title);
       const source = element(
         'div',
         'source',
-        [item.event.source, item.event.actor, item.event.subject].filter(Boolean).join(' · '),
+        [thread.brief, thread.pendingItemCount + ' pending', thread.channel, thread.decidedBy]
+          .filter(Boolean).join(' · '),
       );
       const actions = element('div', 'actions');
       const ack = element('button', 'ack', 'Done');
       const snooze = element('button', '', 'Snooze 1h');
-      ack.addEventListener('click', () => act(item, 'ack', ack));
-      snooze.addEventListener('click', () => act(item, 'snooze', snooze));
+      ack.addEventListener('click', () => act(thread, 'ack', ack));
+      snooze.addEventListener('click', () => act(thread, 'snooze', snooze));
       actions.append(ack, snooze);
       card.append(meta, title, source, actions);
       return card;
     }
 
-    async function act(item, action, button) {
+    async function act(thread, action, button) {
       button.disabled = true;
       try {
-        const body = { receiptHandle: item.receiptHandle, actor: credentials().actor };
+        const body = { actor: credentials().actor };
         if (action === 'snooze') body.delaySeconds = 3600;
-        const response = await fetch('/triage/items/' + item.id + '/' + action, {
+        const response = await fetch('/threads/' + thread.id + '/' + action, {
           method: 'POST',
           headers: authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(body),
         });
         if (!response.ok) throw new Error('Action failed (' + response.status + ')');
-        items.delete(item.id);
+        threads.delete(thread.id);
         render();
       } catch (error) {
         alert(error.message);
@@ -158,22 +159,19 @@ export const dashboardHtml = String.raw`<!doctype html>
       }
     }
 
-    async function loadItems() {
-      const response = await fetch('/triage/items', { headers: authHeaders() });
+    async function loadThreads() {
+      const response = await fetch('/threads', { headers: authHeaders() });
       if (response.status === 401 || response.status === 503) throw new Error('auth');
-      if (!response.ok) throw new Error('Could not load triage items');
+      if (!response.ok) throw new Error('Could not load threads');
       const payload = await response.json();
-      items.clear();
-      for (const item of payload.data) items.set(item.id, item);
+      threads.clear();
+      for (const thread of payload.data) threads.set(thread.id, thread);
       render();
     }
 
     function applyStreamMessage(message) {
-      const item = message.triageItem;
-      if (!item) return;
-      if (item.status === 'pending') items.set(item.id, item);
-      else items.delete(item.id);
-      render();
+      if (!message.threadId && !message.triageItem) return;
+      void loadThreads();
     }
 
     async function connectStream() {
@@ -217,7 +215,7 @@ export const dashboardHtml = String.raw`<!doctype html>
     async function boot() {
       if (!credentials().token) return login.showModal();
       try {
-        await loadItems();
+        await loadThreads();
         void connectStream();
       } catch (error) {
         if (error.message === 'auth') login.showModal();
@@ -230,7 +228,7 @@ export const dashboardHtml = String.raw`<!doctype html>
       sessionStorage.setItem('events.token', document.querySelector('#token').value);
       sessionStorage.setItem('events.actor', document.querySelector('#actor').value);
       try {
-        await loadItems();
+        await loadThreads();
         login.close();
         void connectStream();
       } catch {

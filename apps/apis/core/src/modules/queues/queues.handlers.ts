@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { jsonObject, pathParam } from "../routing/routing.http.js";
 import { queuesService } from "./queues.dependencies.js";
+import { digestService } from "../digests/digest.dependencies.js";
 
 export const listQueuesHandler = async (c: Context) => c.json({
   data: await queuesService.listQueues(),
@@ -42,6 +43,15 @@ export const ackMessageHandler = async (c: Context) => {
   return c.body(null, 204);
 };
 
+export const nackMessageHandler = async (c: Context) => {
+  await queuesService.nackMessage(
+    pathParam(c, "id"),
+    pathParam(c, "messageId"),
+    await jsonObject(c),
+  );
+  return c.body(null, 204);
+};
+
 export const snoozeMessageHandler = async (c: Context) => {
   await queuesService.snoozeMessage(
     pathParam(c, "id"),
@@ -66,4 +76,8 @@ export const listAttemptsHandler = async (c: Context) => c.json({
 
 export const getQueueStatsHandler = async (c: Context) => c.json({
   data: await queuesService.getStats(pathParam(c, "id")),
+});
+
+export const flushDigestHandler = async (c: Context) => c.json({
+  data: await digestService.flushQueue(pathParam(c, "id")),
 });

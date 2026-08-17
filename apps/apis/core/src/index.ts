@@ -15,6 +15,10 @@ import {
   dashboardConsumerEngine,
   startDashboardConsumerEngine,
 } from './modules/triage/dashboard.consumer.js'
+import {
+  digestScheduler,
+  startDigestScheduler,
+} from './modules/digests/digest.scheduler.js'
 
 let stopGmailPolling: (() => void) | undefined
 
@@ -26,6 +30,7 @@ const server = serve({
   startRoutingEngine()
   startSseNotificationEngine()
   startDashboardConsumerEngine()
+  startDigestScheduler()
   stopGmailPolling = startGmailPollScheduler()
 })
 
@@ -35,6 +40,7 @@ async function shutdown(signal: string) {
   shuttingDown = true
   console.log(`Received ${signal}; draining consumers`)
   stopGmailPolling?.()
+  digestScheduler.stop()
   await Promise.allSettled([
     dashboardConsumerEngine.stop(),
     routingEngine.stop(),

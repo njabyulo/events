@@ -13,6 +13,7 @@ import { rulesRouter } from "../modules/routing/rules/rules.routes.js";
 import { targetsRouter } from "../modules/routing/targets/targets.routes.js";
 import { triageRouter } from "../modules/triage/triage.routes.js";
 import { dashboardHtml } from "../modules/triage/dashboard.page.js";
+import { threadsRouter } from "../modules/triage/threads.routes.js";
 
 export const app = new Hono<AppEnvironment>();
 
@@ -31,6 +32,7 @@ app.route("/targets", targetsRouter);
 app.route("/queues", queuesRouter);
 app.route("/replays", replaysRouter);
 app.route("/triage", triageRouter);
+app.route("/threads", threadsRouter);
 
 app.notFound(apiNotFoundHandler);
 app.onError(apiErrorHandler);

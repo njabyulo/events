@@ -129,6 +129,15 @@ function workerFor(queue: QueueRecord, instanceId: string): ConsumerWorker {
         );
         return true;
       },
+      nack: async (message, error) => {
+        await queuesService.nackMessage(queue.id, message.id, {
+          receiptHandle: message.receiptHandle,
+          consumerName,
+          receiveCount: message.receiveCount,
+          error,
+        });
+        return true;
+      },
       release: (message) => queuesService.releaseMessage(
         queue.id,
         message.id,
