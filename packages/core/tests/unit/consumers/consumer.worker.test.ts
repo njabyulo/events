@@ -41,6 +41,7 @@ function dependencies(messages: ReceivedQueueMessage[]) {
   return {
     receive: vi.fn(async () => messages),
     ack: vi.fn(async () => true),
+    nack: vi.fn(async () => true),
     release: vi.fn(async () => true),
     extendVisibility: vi.fn(async () => true),
   };
@@ -74,7 +75,7 @@ describe("ConsumerWorker", () => {
     expect(client.release).not.toHaveBeenCalled();
   });
 
-  test("releases a lease when the handler crashes", async () => {
+  test("NACKs with retry metadata when the handler crashes", async () => {
     const client = dependencies([message("1")]);
     const worker = createConsumerWorker({
       queueClient: client,
@@ -92,7 +93,11 @@ describe("ConsumerWorker", () => {
     await worker.runOnce();
 
     expect(client.ack).not.toHaveBeenCalled();
-    expect(client.release).toHaveBeenCalledOnce();
+    expect(client.nack).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "1" }),
+      expect.objectContaining({ message: "simulated crash" }),
+    );
+    expect(client.release).not.toHaveBeenCalled();
   });
 
   test("graceful shutdown releases deferred human work", async () => {

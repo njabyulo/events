@@ -26,6 +26,7 @@ export type QueuesRepository = Pick<QueuesRepo,
   | "sendMessage"
   | "receiveMessages"
   | "ackMessage"
+  | "nackMessage"
   | "releaseMessage"
   | "snoozeMessage"
   | "extendVisibility"
@@ -37,7 +38,10 @@ export type CreateQueueCommand = Record<string, unknown>;
 export type UpdateQueueCommand = Record<string, unknown>;
 
 export class QueuesService {
-  constructor(private readonly repository: QueuesRepository) {}
+  constructor(
+    private readonly repository: QueuesRepository,
+    private readonly random: () => number = Math.random,
+  ) {}
 
   async listQueues(): Promise<QueueRecord[]> {
     return this.run(() => this.repository.listQueues());
@@ -216,6 +220,29 @@ export class QueuesService {
     ));
   }
 
+  async nackMessage(
+    queueId: string,
+    messageId: string,
+    command: Record<string, unknown>,
+  ): Promise<void> {
+    const receiveCount = QueuesUtils.integer(
+      command.receiveCount,
+      "receive_count",
+      1,
+      1,
+      1_000_000,
+    );
+    const nacked = await this.run(() => this.repository.nackMessage({
+      queueId: QueuesUtils.id(queueId, "queue_id"),
+      messageId: QueuesUtils.id(messageId, "message_id"),
+      receiptHandle: QueuesUtils.receiptHandle(command.receiptHandle),
+      consumerName: QueuesUtils.consumerName(command.consumerName),
+      delaySeconds: QueuesUtils.retryDelaySeconds(receiveCount, this.random),
+      error: QueuesUtils.boundedError(command.error),
+    }));
+    if (!nacked) throw new QueueLeaseConflictError();
+  }
+
   async extendVisibility(
     queueId: string,
     messageId: string,
@@ -303,6 +330,9 @@ export class QueuesService {
   }
 }
 
-export const createQueuesService = (repository: QueuesRepository): QueuesService => (
-  new QueuesService(repository)
+export const createQueuesService = (
+  repository: QueuesRepository,
+  options: { random?: () => number } = {},
+): QueuesService => (
+  new QueuesService(repository, options.random)
 );

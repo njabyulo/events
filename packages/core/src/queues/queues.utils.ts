@@ -2,6 +2,23 @@ import type { Priority } from "database/queues";
 import { QueueValidationError } from "./queue.errors.js";
 
 export class QueuesUtils {
+  static retryDelaySeconds(
+    receiveCount: number,
+    random = Math.random,
+    baseSeconds = 5,
+    maximumSeconds = 900,
+  ): number {
+    const exponent = Math.max(0, Math.min(receiveCount - 1, 30));
+    const backoff = Math.min(maximumSeconds, baseSeconds * (2 ** exponent));
+    const jitter = Math.floor(random() * Math.max(1, Math.ceil(backoff * 0.2)));
+    return Math.min(maximumSeconds, backoff + jitter);
+  }
+
+  static boundedError(value: unknown): string {
+    const message = value instanceof Error ? value.message : String(value ?? "Processing failed");
+    return message.replace(/\s+/g, " ").trim().slice(0, 500) || "Processing failed";
+  }
+
   static id(value: unknown, field: string): string {
     if (typeof value !== "string" || !/^\d+$/.test(value) || BigInt(value) <= 0n) {
       throw new QueueValidationError(`invalid_${field}`, `${field} must be a positive ID`);

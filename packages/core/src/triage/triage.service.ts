@@ -12,6 +12,7 @@ import {
   QueueValidationError,
 } from "../queues/queue.errors.js";
 import { QueuesUtils } from "../queues/queues.utils.js";
+import { TriageUtils } from "./triage.utils.js";
 
 export type TriageRepository = Pick<TriageRepo,
   | "storeClaim"
@@ -31,7 +32,13 @@ export class TriageService {
       streamKey: string;
     },
   ): Promise<TriageItemRecord> {
-    return this.run(() => this.repository.storeClaim({ message, ...options }));
+    return this.run(() => this.repository.storeClaim({
+      message,
+      ...options,
+      threadKey: TriageUtils.threadKey(message.event),
+      title: TriageUtils.title(message.event),
+      decision: TriageUtils.decide(message.event, message.queueName),
+    }));
   }
 
   async listItems(streamKey: unknown): Promise<TriageItemRecord[]> {

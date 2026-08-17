@@ -3,6 +3,7 @@ import { defineConfig } from "tsdown";
 export default defineConfig({
   entry: {
     consumers: "src/consumers/index.ts",
+    digests: "src/digests/index.ts",
     events: "src/events/events.service.ts",
     gmail: "src/gmail/index.ts",
     queues: "src/queues/index.ts",

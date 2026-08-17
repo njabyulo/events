@@ -15,6 +15,10 @@
       "types": "./dist/consumers.d.mts",
       "default": "./dist/consumers.mjs"
     },
+    "./digests": {
+      "types": "./dist/digests.d.mts",
+      "default": "./dist/digests.mjs"
+    },
     "./queues": {
       "types": "./dist/queues.d.mts",
       "default": "./dist/queues.mjs"

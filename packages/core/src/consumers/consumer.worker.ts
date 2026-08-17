@@ -1,6 +1,6 @@
 import type { ReceivedQueueMessage } from "database/queues";
 
-export type ConsumerDisposition = "ack" | "release" | "defer";
+export type ConsumerDisposition = "ack" | "nack" | "defer";
 
 export type ConsumerQueueClient = {
   receive: (options: {
@@ -9,6 +9,7 @@ export type ConsumerQueueClient = {
     consumerName: string;
   }) => Promise<ReceivedQueueMessage[]>;
   ack: (message: ReceivedQueueMessage) => Promise<boolean>;
+  nack: (message: ReceivedQueueMessage, error: Error) => Promise<boolean>;
   release: (message: ReceivedQueueMessage) => Promise<boolean>;
   extendVisibility: (
     message: ReceivedQueueMessage,
@@ -139,12 +140,16 @@ export class ConsumerWorker {
         } else if (disposition === "ack") {
           await this.dependencies.queueClient.ack(message);
         } else {
-          await this.dependencies.queueClient.release(message);
+          await this.dependencies.queueClient.nack(
+            message,
+            new Error("Consumer requested retry"),
+          );
         }
       } catch (error) {
-        this.report(error, message);
-        await this.dependencies.queueClient.release(message).catch((releaseError) => {
-          this.report(releaseError, message);
+        const failure = error instanceof Error ? error : new Error(String(error));
+        this.report(failure, message);
+        await this.dependencies.queueClient.nack(message, failure).catch((nackError) => {
+          this.report(nackError, message);
           return false;
         });
       } finally {
