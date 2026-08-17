@@ -11,6 +11,14 @@
       "types": "./dist/outbox.d.mts",
       "default": "./dist/outbox.mjs"
     },
+    "./queues": {
+      "types": "./dist/queues.d.mts",
+      "default": "./dist/queues.mjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.mts",
+      "default": "./dist/runtime.mjs"
+    },
     "./routing": {
       "types": "./dist/routing.d.mts",
       "default": "./dist/routing.mjs"
@@ -22,6 +30,10 @@
     "./targets": {
       "types": "./dist/targets.d.mts",
       "default": "./dist/targets.mjs"
+    },
+    "./triage": {
+      "types": "./dist/triage.d.mts",
+      "default": "./dist/triage.mjs"
     }
   },
   "scripts": {

@@ -26,6 +26,7 @@ import {
   ruleVersionsTable,
   targetsTable,
 } from "../../schemas/routing.schema.js";
+import { streamMessagesTable } from "../../schemas/transport.schema.js";
 import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
 import type {
@@ -52,6 +53,7 @@ type QueueRow = typeof queuesTable.$inferSelect;
 export type RoutingRepoDependencies = {
   database: Database;
   sseChannel: string;
+  queueChannel: string;
 };
 
 export type CreateReplayInput = {
@@ -439,19 +441,41 @@ export class RoutingRepo {
         : []
     ));
     if (queueMessages.length > 0) {
-      await transaction.insert(queueMessagesTable).values(queueMessages)
-        .onConflictDoNothing();
+      const insertedMessages = await transaction.insert(queueMessagesTable)
+        .values(queueMessages)
+        .onConflictDoNothing()
+        .returning({ id: queueMessagesTable.id });
+      for (const message of insertedMessages) {
+        await transaction.execute(sql`select pg_notify(
+          ${this.dependencies.queueChannel},
+          ${String(message.id)}
+        )`);
+      }
     }
 
-    for (const { decision, route } of createdDeliveries) {
-      if (decision.delivery.kind === "sse") {
+    const streamMessages = createdDeliveries.flatMap(({ decision, route }) => (
+      decision.delivery.kind === "sse"
+        ? [{
+          stream_key: decision.delivery.streamKey,
+          event_name: "event.routed",
+          event_id: eventId,
+          route_id: route.id,
+          data: {
+            priority: decision.priority,
+            targetId: decision.target.id,
+          },
+        }]
+        : []
+    ));
+    if (streamMessages.length > 0) {
+      const insertedMessages = await transaction.insert(streamMessagesTable)
+        .values(streamMessages)
+        .onConflictDoNothing()
+        .returning({ id: streamMessagesTable.id });
+      for (const message of insertedMessages) {
         await transaction.execute(sql`select pg_notify(
           ${this.dependencies.sseChannel},
-          ${JSON.stringify({
-            eventId: String(eventId),
-            routeId: String(route.id),
-            streamKey: decision.delivery.streamKey,
-          })}
+          ${String(message.id)}
         )`);
       }
     }
@@ -653,10 +677,14 @@ export class RoutingRepo {
   }
 }
 
-function resolveChannel(value: string | undefined): string {
-  const channel = value || "sse_ready";
+function resolveChannel(
+  value: string | undefined,
+  name: string,
+  fallback: string,
+): string {
+  const channel = value || fallback;
   if (!/^[a-z_][a-z0-9_$]*$/i.test(channel)) {
-    throw new Error("SSE_CHANNEL must be a valid PostgreSQL identifier");
+    throw new Error(`${name} must be a valid PostgreSQL identifier`);
   }
   return channel;
 }
@@ -665,7 +693,16 @@ export const createRoutingRepo = (
   options: Partial<RoutingRepoDependencies> = {},
 ): RoutingRepo => new RoutingRepo({
   database: options.database ?? db,
-  sseChannel: resolveChannel(options.sseChannel ?? process.env.SSE_CHANNEL),
+  sseChannel: resolveChannel(
+    options.sseChannel ?? process.env.SSE_CHANNEL,
+    "SSE_CHANNEL",
+    "sse_ready",
+  ),
+  queueChannel: resolveChannel(
+    options.queueChannel ?? process.env.QUEUE_CHANNEL,
+    "QUEUE_CHANNEL",
+    "queue_ready",
+  ),
 });
 
 export const routingRepo = createRoutingRepo();

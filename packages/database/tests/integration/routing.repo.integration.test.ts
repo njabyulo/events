@@ -20,6 +20,7 @@ import { createTargetsRepo, type TargetsRepo } from "../../src/repos/targets/tar
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const schema = `routing_test_${randomUUID().replaceAll("-", "")}`;
+const sseChannel = `sse_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 
 let adminPool: Pool;
 let testPool: Pool;
@@ -126,14 +127,18 @@ beforeAll(async () => {
 
   const database = drizzle({ client: testPool });
   eventsRepo = createEventsRepo({ database, eventsChannel: "events_ready_test" });
-  routingRepo = createRoutingRepo({ database, sseChannel: "sse_ready_test" });
-  secondRoutingRepo = createRoutingRepo({ database, sseChannel: "sse_ready_test" });
+  routingRepo = createRoutingRepo({ database, sseChannel });
+  secondRoutingRepo = createRoutingRepo({ database, sseChannel });
   rulesRepo = createRulesRepo(database);
   targetsRepo = createTargetsRepo(database);
 }, 30_000);
 
 beforeEach(async () => {
   await testPool.query(`
+    delete from stream_messages;
+    delete from triage_items;
+    delete from consumer_inbox;
+    delete from message_attempts;
     delete from target_tests;
     delete from queue_messages;
     delete from event_routing_skips;
@@ -259,7 +264,7 @@ describe("routing coordination and idempotency", () => {
 
     const listener = new Client({ connectionString: connectionString! });
     await listener.connect();
-    await listener.query("listen sse_ready_test");
+    await listener.query(`listen "${sseChannel}"`);
     const notification = new Promise<string>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("SSE notification timed out")), 2_000);
       listener.once("notification", (message) => {
@@ -278,12 +283,17 @@ describe("routing coordination and idempotency", () => {
         delivery: { kind: "sse", streamKey: "triage" },
       }]);
 
-      const payload = JSON.parse(await notification) as Record<string, unknown>;
-      expect(payload).toMatchObject({
-        eventId: work!.event.id,
-        streamKey: "triage",
-      });
-      expect(payload.routeId).toEqual(expect.any(String));
+      const streamMessageId = await notification;
+      expect(streamMessageId).toMatch(/^\d+$/);
+      const streamMessage = await testPool.query(
+        "select stream_key, event_id, route_id from stream_messages where id = $1",
+        [streamMessageId],
+      );
+      expect(streamMessage.rows).toMatchObject([{
+        stream_key: "triage",
+        event_id: work!.event.id,
+        route_id: expect.any(String),
+      }]);
       await expect(routingRepo.getEventRoutes(work!.event.id)).resolves.toMatchObject([{
         targetKind: "sse",
       }]);
