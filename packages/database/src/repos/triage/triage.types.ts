@@ -1,6 +1,17 @@
 import type { Priority, StoredEvent } from "../routing/index.js";
 
 export type TriageStatus = "pending" | "snoozed" | "acked";
+export type ThreadStatus = "open" | "snoozed" | "acked";
+export type TriageChannel = "web" | "digest";
+
+export type TriageDecisionRecord = {
+  domain: string;
+  priority: Priority;
+  channel: TriageChannel;
+  brief: string;
+  decidedBy: "rule-stub";
+  reason: string;
+};
 
 export type TriageItemRecord = {
   id: string;
@@ -9,8 +20,13 @@ export type TriageItemRecord = {
   queueMessageId: string;
   queueId: string;
   eventId: string;
+  threadId: string | null;
   domain: string;
   priority: Priority;
+  channel: TriageChannel;
+  brief: string;
+  decidedBy: string;
+  decisionReason: string;
   status: TriageStatus;
   receiptHandle: string | null;
   visibleUntil: string | null;
@@ -20,12 +36,33 @@ export type TriageItemRecord = {
   event: StoredEvent;
 };
 
+export type ThreadRecord = {
+  id: string;
+  threadKey: string;
+  domain: string;
+  priority: Priority;
+  channel: TriageChannel;
+  title: string;
+  brief: string;
+  decidedBy: string;
+  decisionReason: string;
+  status: ThreadStatus;
+  firstEventAt: string;
+  lastEventAt: string;
+  createdAt: string;
+  updatedAt: string;
+  ackedAt: string | null;
+  pendingItemCount: number;
+  messages: StoredEvent[];
+};
+
 export type StreamMessageRecord = {
   id: string;
   streamKey: string;
   eventName: string;
   eventId: string;
   routeId: string | null;
+  threadId: string | null;
   triageItem: TriageItemRecord | null;
   data: Record<string, unknown>;
   createdAt: string;

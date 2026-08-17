@@ -2,6 +2,7 @@ import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { db, type Database } from "../../client.js";
 import { eventLinksTable, eventsTable } from "../../schemas/events.schema.js";
 import { queueMessagesTable } from "../../schemas/routing.schema.js";
+import { threadMessagesTable, threadsTable } from "../../schemas/threads.schema.js";
 import {
   consumerInboxTable,
   messageAttemptsTable,
@@ -14,6 +15,7 @@ import type { ReceivedQueueMessage } from "../queues/queues.types.js";
 import type {
   StreamMessageRecord,
   TriageActionResult,
+  TriageDecisionRecord,
   TriageItemRecord,
 } from "./triage.types.js";
 
@@ -30,6 +32,9 @@ export type StoreClaimInput = {
   consumerName: string;
   consumerInstanceId: string;
   streamKey: string;
+  threadKey: string;
+  title: string;
+  decision: TriageDecisionRecord;
 };
 
 function numericId(value: string): number | null {
@@ -45,8 +50,13 @@ function toTriageItem(row: TriageRow, event: StoredEvent): TriageItemRecord {
     queueMessageId: String(row.queue_message_id),
     queueId: String(row.queue_id),
     eventId: String(row.event_id),
+    threadId: row.thread_id === null ? null : String(row.thread_id),
     domain: row.domain,
     priority: row.priority as TriageItemRecord["priority"],
+    channel: row.channel as TriageItemRecord["channel"],
+    brief: row.brief,
+    decidedBy: row.decided_by,
+    decisionReason: row.decision_reason,
     status: row.status as TriageItemRecord["status"],
     receiptHandle: row.receipt_handle,
     visibleUntil: row.visible_until?.toISOString() ?? null,
@@ -72,6 +82,51 @@ export class TriageRepo {
         first_message_id: messageId,
       }).onConflictDoNothing().returning({ eventId: consumerInboxTable.event_id });
 
+      const [thread] = await transaction.insert(threadsTable).values({
+        thread_key: input.threadKey,
+        domain: input.decision.domain,
+        priority: input.decision.priority,
+        channel: input.decision.channel,
+        title: input.title,
+        brief: input.decision.brief,
+        decided_by: input.decision.decidedBy,
+        decision_reason: input.decision.reason,
+        status: "open",
+        first_event_at: new Date(input.message.event.occurredAt),
+        last_event_at: new Date(input.message.event.occurredAt),
+      }).onConflictDoUpdate({
+        target: threadsTable.thread_key,
+        set: {
+          domain: input.decision.domain,
+          priority: sql`case
+            when ${threadsTable.status} <> 'open' then ${input.decision.priority}
+            when ${threadsTable.priority} = 'urgent' or ${input.decision.priority} = 'urgent'
+              then 'urgent'
+            when ${threadsTable.priority} = 'normal' or ${input.decision.priority} = 'normal'
+              then 'normal'
+            else 'low'
+          end`,
+          channel: input.decision.channel,
+          title: input.title,
+          brief: input.decision.brief,
+          decided_by: input.decision.decidedBy,
+          decision_reason: input.decision.reason,
+          status: "open",
+          last_event_at: sql`greatest(
+            ${threadsTable.last_event_at},
+            ${new Date(input.message.event.occurredAt)}
+          )`,
+          updated_at: new Date(),
+          acked_at: null,
+        },
+      }).returning();
+      if (!thread) throw new Error("Thread upsert returned no row");
+
+      await transaction.insert(threadMessagesTable).values({
+        thread_id: thread.id,
+        event_id: eventId,
+      }).onConflictDoNothing();
+
       const [item] = await transaction.insert(triageItemsTable).values({
         stream_key: input.streamKey,
         consumer_name: input.consumerName,
@@ -79,8 +134,13 @@ export class TriageRepo {
         queue_message_id: messageId,
         queue_id: queueId,
         event_id: eventId,
-        domain: input.message.queueName,
-        priority: input.message.priority,
+        thread_id: thread.id,
+        domain: input.decision.domain,
+        priority: input.decision.priority,
+        channel: input.decision.channel,
+        brief: input.decision.brief,
+        decided_by: input.decision.decidedBy,
+        decision_reason: input.decision.reason,
         status: "pending",
         receipt_handle: input.message.receiptHandle,
         visible_until: new Date(input.message.visibleUntil),
@@ -91,6 +151,13 @@ export class TriageRepo {
           status: "pending",
           receipt_handle: input.message.receiptHandle,
           visible_until: new Date(input.message.visibleUntil),
+          thread_id: thread.id,
+          domain: input.decision.domain,
+          priority: input.decision.priority,
+          channel: input.decision.channel,
+          brief: input.decision.brief,
+          decided_by: input.decision.decidedBy,
+          decision_reason: input.decision.reason,
           updated_at: new Date(),
           acked_at: null,
         },
@@ -102,7 +169,8 @@ export class TriageRepo {
         event_name: "triage.item.available",
         event_id: eventId,
         triage_item_id: item.id,
-        data: { duplicate: inbox === undefined },
+        thread_id: thread.id,
+        data: { duplicate: inbox === undefined, threadId: String(thread.id) },
       }).returning({ id: streamMessagesTable.id });
       if (!streamMessage) throw new Error("Stream message insert returned no ID");
       await this.notify(transaction, streamMessage.id);
@@ -249,6 +317,7 @@ export class TriageRepo {
       event_name: eventName,
       event_id: item.event_id,
       triage_item_id: item.id,
+      thread_id: item.thread_id,
       data,
     }).returning({ id: streamMessagesTable.id });
     if (!streamMessage) throw new Error("Stream message insert returned no ID");

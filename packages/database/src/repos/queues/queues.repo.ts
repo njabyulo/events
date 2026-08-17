@@ -4,6 +4,7 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   sql,
 } from "drizzle-orm";
@@ -56,6 +57,15 @@ export type ReceiveMessagesInput = {
   maxMessages: number;
   visibilityTimeoutSeconds?: number;
   consumerName: string;
+};
+
+export type NackMessageInput = {
+  queueId: string;
+  messageId: string;
+  receiptHandle: string;
+  consumerName: string;
+  delaySeconds: number;
+  error: string;
 };
 
 export type QueueRepoDependencies = {
@@ -367,6 +377,19 @@ export class QueuesRepo {
     );
   }
 
+  async nackMessage(input: NackMessageInput): Promise<boolean> {
+    return this.reschedule(
+      input.queueId,
+      input.messageId,
+      input.receiptHandle,
+      input.consumerName,
+      input.delaySeconds,
+      "nacked",
+      { error: input.error, delaySeconds: input.delaySeconds },
+      input.error,
+    );
+  }
+
   async snoozeMessage(
     queueId: string,
     messageId: string,
@@ -426,6 +449,112 @@ export class QueuesRepo {
     return rows.map(toAttempt);
   }
 
+  async claimDigestMessages(
+    queueId: string,
+    visibilityTimeoutSeconds: number,
+    consumerName: string,
+  ): Promise<ReceivedQueueMessage[] | null> {
+    const parsed = numericId(queueId);
+    if (!parsed) return null;
+    return this.dependencies.database.transaction(async (transaction) => {
+      const [queue] = await transaction.select().from(queuesTable).where(and(
+        eq(queuesTable.id, parsed),
+        isNull(queuesTable.deleted_at),
+        isNotNull(queuesTable.digest_flush_cron),
+      )).for("update").limit(1);
+      if (!queue) return null;
+
+      const result = await transaction.execute(sql`
+        with candidates as (
+          select id
+          from queue_messages
+          where queue_id = ${parsed}
+            and visible_at <= now()
+          order by visible_at, id
+          for update skip locked
+        )
+        update queue_messages as message
+        set visible_at = now() + (${visibilityTimeoutSeconds} * interval '1 second'),
+            receipt_handle = gen_random_uuid(),
+            receive_count = receive_count + 1
+        from candidates
+        where message.id = candidates.id
+        returning message.*
+      `);
+      const claimed = result.rows.map((row) => claimedMessage(row));
+      if (claimed.length === 0) return [];
+      await transaction.insert(messageAttemptsTable).values(claimed.map((message) => ({
+        message_id: message.id,
+        queue_id: message.queue_id,
+        event_id: message.event_id,
+        consumer_name: consumerName,
+        receipt_handle: message.receipt_handle,
+        receive_count: message.receive_count,
+        outcome: "received",
+        visible_until: message.visible_at,
+        detail: { digest: true },
+      })));
+      const eventRows = await transaction
+        .select({ event: eventsTable, link: eventLinksTable })
+        .from(eventsTable)
+        .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, eventsTable.id))
+        .where(inArray(eventsTable.id, claimed.map(({ event_id }) => event_id)));
+      const events = new Map(toStoredEvents(eventRows).map((event) => [event.id, event]));
+      return claimed.map((message) => {
+        const event = events.get(String(message.event_id));
+        if (!event || !message.receipt_handle) {
+          throw new Error(`Claimed digest message ${message.id} is incomplete`);
+        }
+        return {
+          ...toMessage(message),
+          queueName: queue.name,
+          visibleUntil: message.visible_at.toISOString(),
+          event,
+        };
+      });
+    });
+  }
+
+  async ackMessages(
+    messages: ReceivedQueueMessage[],
+    consumerName: string,
+  ): Promise<boolean> {
+    if (messages.length === 0) return true;
+    const ids = messages.map(({ id }) => numericId(id));
+    if (ids.some((id) => id === null)) return false;
+    return this.dependencies.database.transaction(async (transaction) => {
+      const current = await transaction.select().from(queueMessagesTable).where(and(
+        inArray(queueMessagesTable.id, ids as number[]),
+        gt(queueMessagesTable.visible_at, sql`now()`),
+      )).for("update");
+      const receipts = new Map(messages.map((message) => [message.id, message.receiptHandle]));
+      if (
+        current.length !== messages.length
+        || current.some((message) => (
+          message.receipt_handle === null
+          || receipts.get(String(message.id)) !== message.receipt_handle
+        ))
+      ) return false;
+      const deleted = await transaction.delete(queueMessagesTable)
+        .where(inArray(queueMessagesTable.id, ids as number[]))
+        .returning();
+      if (deleted.length !== messages.length) {
+        throw new Error("Digest ACK lost a locked queue message");
+      }
+      await transaction.insert(messageAttemptsTable).values(deleted.map((message) => ({
+        message_id: message.id,
+        queue_id: message.queue_id,
+        event_id: message.event_id,
+        consumer_name: consumerName,
+        receipt_handle: message.receipt_handle,
+        receive_count: message.receive_count,
+        outcome: "acked",
+        detail: { digest: true },
+      })));
+      return true;
+    });
+  }
+
   async getStats(queueId: string): Promise<QueueStats | null> {
     const parsed = numericId(queueId);
     if (!parsed) return null;
@@ -469,7 +598,9 @@ export class QueuesRepo {
     receiptHandle: string,
     consumerName: string,
     delaySeconds: number,
-    outcome: "released" | "snoozed",
+    outcome: "nacked" | "released" | "snoozed",
+    detail: JsonObject = {},
+    lastError: string | null = null,
   ): Promise<boolean> {
     return this.withActiveLease(
       queueId,
@@ -479,6 +610,7 @@ export class QueuesRepo {
         const [updated] = await transaction.update(queueMessagesTable).set({
           visible_at: sql`now() + (${delaySeconds} * interval '1 second')`,
           receipt_handle: null,
+          last_error: lastError,
         }).where(and(
           eq(queueMessagesTable.id, numericMessageId),
           eq(queueMessagesTable.queue_id, numericQueueId),
@@ -486,7 +618,14 @@ export class QueuesRepo {
           gt(queueMessagesTable.visible_at, sql`now()`),
         )).returning();
         if (!updated) return false;
-        await this.recordAttempt(transaction, updated, consumerName, receiptHandle, outcome);
+        await this.recordAttempt(
+          transaction,
+          updated,
+          consumerName,
+          receiptHandle,
+          outcome,
+          detail,
+        );
         return true;
       },
     );

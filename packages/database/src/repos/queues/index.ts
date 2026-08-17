@@ -2,6 +2,7 @@ export { createQueuesRepo, QueuesRepo, queuesRepo } from "./queues.repo.js";
 export type {
   CreateQueueInput,
   DeleteQueueResult,
+  NackMessageInput,
   QueueRepoDependencies,
   ReceiveMessagesInput,
   SendMessageInput,

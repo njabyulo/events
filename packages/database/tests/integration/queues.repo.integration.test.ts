@@ -8,6 +8,7 @@ import { createEventsRepo, type EventsRepo } from "../../src/repos/events/events
 import type { EventToIngest } from "../../src/repos/events/events.types.js";
 import { createQueuesRepo, type QueuesRepo } from "../../src/repos/queues/queues.repo.js";
 import { createStreamsRepo, type StreamsRepo } from "../../src/repos/triage/streams.repo.js";
+import { createThreadsRepo, type ThreadsRepo } from "../../src/repos/triage/threads.repo.js";
 import { createTriageRepo, type TriageRepo } from "../../src/repos/triage/triage.repo.js";
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -22,6 +23,7 @@ let queuesRepo: QueuesRepo;
 let secondQueuesRepo: QueuesRepo;
 let triageRepo: TriageRepo;
 let streamsRepo: StreamsRepo;
+let threadsRepo: ThreadsRepo;
 
 function event(): EventToIngest {
   return {
@@ -66,12 +68,15 @@ beforeAll(async () => {
   secondQueuesRepo = createQueuesRepo({ database, queueChannel });
   triageRepo = createTriageRepo({ database, sseChannel });
   streamsRepo = createStreamsRepo(database);
+  threadsRepo = createThreadsRepo({ database, sseChannel });
 }, 30_000);
 
 beforeEach(async () => {
   await testPool.query(`
     delete from stream_messages;
     delete from triage_items;
+    delete from thread_messages;
+    delete from threads;
     delete from consumer_inbox;
     delete from message_attempts;
     delete from queue_messages;
@@ -102,6 +107,25 @@ async function enqueue() {
   });
   if (!message) throw new Error("Message was not enqueued");
   return { queue, message };
+}
+
+function claimInput(message: NonNullable<Awaited<ReturnType<QueuesRepo["receiveMessages"]>>>[number]) {
+  return {
+    message,
+    consumerName: "dashboard:career",
+    consumerInstanceId: randomUUID(),
+    streamKey: "triage",
+    threadKey: "example:thread:example-thread",
+    title: "Example thread",
+    decision: {
+      domain: "career",
+      priority: "normal" as const,
+      channel: "web" as const,
+      brief: "Example notification",
+      decidedBy: "rule-stub" as const,
+      reason: "rule-stub:example:message.received",
+    },
+  };
 }
 
 describe("queue claims and visibility", () => {
@@ -201,10 +225,7 @@ describe("dashboard inbox and durable stream", () => {
       consumerName: "dashboard:career",
     }) ?? [];
     const firstItem = await triageRepo.storeClaim({
-      message: first!,
-      consumerName: "dashboard:career",
-      consumerInstanceId: randomUUID(),
-      streamKey: "triage",
+      ...claimInput(first!),
     });
     await queuesRepo.releaseMessage(
       queue.id,
@@ -218,10 +239,7 @@ describe("dashboard inbox and durable stream", () => {
       consumerName: "dashboard:career",
     }) ?? [];
     const secondItem = await triageRepo.storeClaim({
-      message: second!,
-      consumerName: "dashboard:career",
-      consumerInstanceId: randomUUID(),
-      streamKey: "triage",
+      ...claimInput(second!),
     });
 
     expect(secondItem.id).toBe(firstItem.id);
@@ -252,10 +270,7 @@ describe("dashboard inbox and durable stream", () => {
       consumerName: "dashboard:career",
     }) ?? [];
     const item = await triageRepo.storeClaim({
-      message: message!,
-      consumerName: "dashboard:career",
-      consumerInstanceId: randomUUID(),
-      streamKey: "triage",
+      ...claimInput(message!),
     });
 
     await expect(triageRepo.ackItem(item.id, message!.receiptHandle!, "example-user"))
@@ -266,5 +281,85 @@ describe("dashboard inbox and durable stream", () => {
       "triage.item.available",
       "triage.item.acked",
     ]);
+  });
+
+  test("shared thread ACK deletes every pending message atomically", async () => {
+    const first = await enqueue();
+    const second = await enqueue();
+    const firstClaim = (await queuesRepo.receiveMessages({
+      queueId: first.queue.id,
+      maxMessages: 10,
+      consumerName: "dashboard:career",
+    })) ?? [];
+    expect(firstClaim).toHaveLength(2);
+    for (const message of firstClaim) await triageRepo.storeClaim(claimInput(message));
+
+    const [thread] = await threadsRepo.listThreads("triage");
+    expect(thread).toMatchObject({ pendingItemCount: 2, status: "open" });
+    await expect(threadsRepo.ackThread(thread!.id, "example-user")).resolves.toBe("updated");
+    await expect(threadsRepo.listThreads("triage")).resolves.toEqual([]);
+    const remaining = await testPool.query("select count(*)::int as count from queue_messages");
+    expect(remaining.rows[0]).toEqual({ count: 0 });
+  });
+});
+
+describe("retry scheduling", () => {
+  test("NACK clears the lease, delays redelivery, and records bounded error metadata", async () => {
+    const { queue, message } = await enqueue();
+    const [claimed] = await queuesRepo.receiveMessages({
+      queueId: queue.id,
+      maxMessages: 1,
+      consumerName: "failure-demo",
+    }) ?? [];
+    await expect(queuesRepo.nackMessage({
+      queueId: queue.id,
+      messageId: message.id,
+      receiptHandle: claimed!.receiptHandle!,
+      consumerName: "failure-demo",
+      delaySeconds: 17,
+      error: "simulated failure",
+    })).resolves.toBe(true);
+    await expect(queuesRepo.receiveMessages({
+      queueId: queue.id,
+      maxMessages: 1,
+      consumerName: "failure-demo",
+    })).resolves.toEqual([]);
+    const attempts = await queuesRepo.listAttempts(message.id);
+    expect(attempts.at(-1)).toMatchObject({
+      outcome: "nacked",
+      detail: { error: "simulated failure", delaySeconds: 17 },
+    });
+  });
+});
+
+describe("digest batches", () => {
+  test("claims every visible digest message and ACKs the batch", async () => {
+    const digest = await queuesRepo.getQueueByName("digest");
+    if (!digest) throw new Error("Seeded digest queue is missing");
+    const visibleEvent = await eventsRepo.ingestEvent(event());
+    const delayedEvent = await eventsRepo.ingestEvent(event());
+    await queuesRepo.sendMessage({
+      queueId: digest.id,
+      eventId: visibleEvent.id,
+      delaySeconds: 0,
+      messageGroupId: "personal",
+      priority: "low",
+    });
+    await queuesRepo.sendMessage({
+      queueId: digest.id,
+      eventId: delayedEvent.id,
+      delaySeconds: 300,
+      messageGroupId: "career",
+      priority: "low",
+    });
+
+    const claimed = await queuesRepo.claimDigestMessages(digest.id, 300, "digest-scheduler");
+    expect(claimed).toHaveLength(1);
+    await expect(queuesRepo.ackMessages(claimed!, "digest-scheduler")).resolves.toBe(true);
+    await expect(queuesRepo.getStats(digest.id)).resolves.toMatchObject({
+      visible: 0,
+      delayed: 1,
+      inFlight: 0,
+    });
   });
 });

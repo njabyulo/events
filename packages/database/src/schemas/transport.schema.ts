@@ -17,6 +17,7 @@ import {
   eventRoutesTable,
   queuesTable,
 } from "./routing.schema.js";
+import { threadsTable } from "./threads.schema.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -39,7 +40,7 @@ export const messageAttemptsTable = pgTable("message_attempts", {
 }, (table) => [
   check(
     "message_attempts_outcome_check",
-    sql`${table.outcome} in ('received', 'acked', 'released', 'visibility_extended', 'snoozed')`,
+    sql`${table.outcome} in ('received', 'acked', 'nacked', 'released', 'visibility_extended', 'snoozed')`,
   ),
   index("message_attempts_message_idx").on(table.message_id, table.occurred_at),
   index("message_attempts_event_idx").on(table.event_id, table.occurred_at),
@@ -68,8 +69,14 @@ export const triageItemsTable = pgTable("triage_items", {
   event_id: bigint("event_id", { mode: "number" })
     .notNull()
     .references(() => eventsTable.id),
+  thread_id: bigint("thread_id", { mode: "number" })
+    .references(() => threadsTable.id),
   domain: text().notNull(),
   priority: text().notNull(),
+  channel: text().notNull().default("web"),
+  brief: text().notNull().default(""),
+  decided_by: text().notNull().default("rule-stub"),
+  decision_reason: text().notNull().default("legacy"),
   status: text().notNull().default("pending"),
   receipt_handle: uuid(),
   visible_until: timestamp({ withTimezone: true }),
@@ -83,10 +90,15 @@ export const triageItemsTable = pgTable("triage_items", {
     sql`${table.priority} in ('urgent', 'normal', 'low')`,
   ),
   check(
+    "triage_items_channel_check",
+    sql`${table.channel} in ('web', 'digest')`,
+  ),
+  check(
     "triage_items_status_check",
     sql`${table.status} in ('pending', 'snoozed', 'acked')`,
   ),
   index("triage_items_status_idx").on(table.stream_key, table.status, table.updated_at),
+  index("triage_items_thread_idx").on(table.thread_id, table.status),
   index("triage_items_instance_idx").on(table.consumer_instance_id, table.status),
 ]);
 
@@ -101,6 +113,8 @@ export const streamMessagesTable = pgTable("stream_messages", {
     .references(() => eventRoutesTable.id),
   triage_item_id: bigint("triage_item_id", { mode: "number" })
     .references(() => triageItemsTable.id),
+  thread_id: bigint("thread_id", { mode: "number" })
+    .references(() => threadsTable.id),
   data: jsonb().$type<JsonObject>().notNull().default({}),
   created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
