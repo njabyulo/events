@@ -11,9 +11,21 @@
       "types": "./dist/gmail.d.mts",
       "default": "./dist/gmail.mjs"
     },
+    "./consumers": {
+      "types": "./dist/consumers.d.mts",
+      "default": "./dist/consumers.mjs"
+    },
+    "./queues": {
+      "types": "./dist/queues.d.mts",
+      "default": "./dist/queues.mjs"
+    },
     "./routing": {
       "types": "./dist/routing.d.mts",
       "default": "./dist/routing.mjs"
+    },
+    "./triage": {
+      "types": "./dist/triage.d.mts",
+      "default": "./dist/triage.mjs"
     }
   },
   "scripts": {
