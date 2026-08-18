@@ -1,4 +1,4 @@
-import type { ThreadRecord, ThreadsRepo } from "database/triage";
+import type { ThreadRecord, ThreadSummaryRecord, ThreadsRepo } from "database/triage";
 import {
   QueueLeaseConflictError,
   QueueNotFoundError,
@@ -17,7 +17,7 @@ export type ThreadsRepository = Pick<ThreadsRepo,
 export class ThreadsService {
   constructor(private readonly repository: ThreadsRepository) {}
 
-  async listThreads(streamKey: unknown): Promise<ThreadRecord[]> {
+  async listThreads(streamKey: unknown): Promise<ThreadSummaryRecord[]> {
     return this.run(() => this.repository.listThreads(this.streamKey(streamKey)));
   }
 

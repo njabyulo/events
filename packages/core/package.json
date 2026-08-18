@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "",
   "exports": {
+    "./agents": {
+      "types": "./dist/agents.d.mts",
+      "default": "./dist/agents.mjs"
+    },
     "./events": {
       "types": "./dist/events.d.mts",
       "default": "./dist/events.mjs"
@@ -19,6 +23,10 @@
       "types": "./dist/digests.d.mts",
       "default": "./dist/digests.mjs"
     },
+    "./escalations": {
+      "types": "./dist/escalations.d.mts",
+      "default": "./dist/escalations.mjs"
+    },
     "./queues": {
       "types": "./dist/queues.d.mts",
       "default": "./dist/queues.mjs"
@@ -26,6 +34,10 @@
     "./routing": {
       "types": "./dist/routing.d.mts",
       "default": "./dist/routing.mjs"
+    },
+    "./telegram": {
+      "types": "./dist/telegram.d.mts",
+      "default": "./dist/telegram.mjs"
     },
     "./triage": {
       "types": "./dist/triage.d.mts",
@@ -42,7 +54,9 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "database": "workspace:*"
+    "@strands-agents/sdk": "^1.13.0",
+    "database": "workspace:*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

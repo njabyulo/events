@@ -2,6 +2,7 @@ import type { StoredEvent } from "database/events";
 import type { TriageDecisionRecord } from "database/triage";
 
 const LINK_PRIORITY = [
+  "thread_key",
   "thread_id",
   "pull_request",
   "issue",
@@ -13,6 +14,28 @@ const LINK_PRIORITY = [
 
 export class TriageUtils {
   static decide(event: StoredEvent, queueName: string): TriageDecisionRecord {
+    const classifiedBy = event.attributes.classifiedBy;
+    const agentDomain = event.attributes.domain;
+    const agentPriority = event.attributes.priority;
+    if (
+      typeof classifiedBy === "string"
+      && (agentDomain === "career" || agentDomain === "personal")
+      && (agentPriority === "urgent" || agentPriority === "normal" || agentPriority === "low")
+    ) {
+      const channel = event.attributes.channel;
+      return {
+        domain: agentDomain,
+        priority: agentPriority,
+        channel: channel === "telegram" || channel === "sms" || channel === "digest"
+          ? channel
+          : "web",
+        brief: TriageUtils.brief(event),
+        decidedBy: "strands-agent",
+        reason: typeof event.attributes.reason === "string"
+          ? event.attributes.reason.slice(0, 500)
+          : `strands-agent:${classifiedBy}`,
+      };
+    }
     const source = event.source.toLowerCase();
     const domain = /(^|[._-])personal($|[._-])/.test(source)
       ? "personal"
@@ -40,6 +63,7 @@ export class TriageUtils {
     for (const kind of LINK_PRIORITY) {
       const link = event.links.find((candidate) => candidate.kind === kind);
       if (!link) continue;
+      if (kind === "thread_key") return link.value.slice(0, 1_000);
       const suffix = kind === "repository"
         ? `:${event.subject?.trim() || event.type}`
         : "";

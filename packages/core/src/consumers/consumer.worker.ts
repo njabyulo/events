@@ -161,7 +161,11 @@ export class ConsumerWorker {
   }
 
   private async heartbeat(): Promise<void> {
-    const messages = [...this.deferred.values()];
+    const leased = new Map<string, ReceivedQueueMessage>();
+    for (const { message } of this.active.values()) leased.set(message.id, message);
+    for (const message of this.deferred.values()) leased.set(message.id, message);
+
+    const messages = [...leased.values()];
     await Promise.allSettled(messages.map(async (message) => {
       try {
         const extended = await this.dependencies.queueClient.extendVisibility(

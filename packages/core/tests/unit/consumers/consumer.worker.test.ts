@@ -138,4 +138,41 @@ describe("ConsumerWorker", () => {
 
     expect(client.receive).toHaveBeenCalledWith(expect.objectContaining({ maxMessages: 2 }));
   });
+
+  test("extends the visibility lease while a handler is still active", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = dependencies([message("1")]);
+      client.receive.mockResolvedValueOnce([message("1")]).mockResolvedValue([]);
+      let finish: ((value: "ack") => void) | undefined;
+      const worker = createConsumerWorker({
+        queueClient: client,
+        consumerName: "slow-worker",
+        maxConcurrency: 1,
+        maxDeferred: 10,
+        pollIntervalMs: 1_000,
+        visibilityTimeoutSeconds: 30,
+        heartbeatIntervalMs: 10_000,
+        handle: () => new Promise((resolve) => {
+          finish = resolve;
+        }),
+      });
+
+      worker.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(worker.inFlightCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(client.extendVisibility).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "1" }),
+        30,
+      );
+      finish?.("ack");
+      await vi.advanceTimersByTimeAsync(0);
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

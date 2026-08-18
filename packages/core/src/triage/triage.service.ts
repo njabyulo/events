@@ -2,6 +2,7 @@ import type {
   ReceivedQueueMessage,
 } from "database/queues";
 import type {
+  TriageDecisionRecord,
   TriageItemRecord,
   TriageRepo,
 } from "database/triage";
@@ -30,14 +31,17 @@ export class TriageService {
       consumerName: string;
       consumerInstanceId: string;
       streamKey: string;
+      decision?: TriageDecisionRecord;
+      threadKey?: string;
+      title?: string;
     },
   ): Promise<TriageItemRecord> {
     return this.run(() => this.repository.storeClaim({
       message,
       ...options,
-      threadKey: TriageUtils.threadKey(message.event),
-      title: TriageUtils.title(message.event),
-      decision: TriageUtils.decide(message.event, message.queueName),
+      threadKey: options.threadKey ?? TriageUtils.threadKey(message.event),
+      title: options.title ?? TriageUtils.title(message.event),
+      decision: options.decision ?? TriageUtils.decide(message.event, message.queueName),
     }));
   }
 
