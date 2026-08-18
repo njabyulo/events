@@ -16,6 +16,7 @@ import {
   createTargetDispatchers,
   type TargetDispatcher,
 } from "./dispatchers/target.dispatcher.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
 export type RouterRepository = Pick<
   RoutingRepo,
@@ -35,6 +36,7 @@ export type RouterServiceDependencies = {
   leaseMs: number;
   retryBaseMs: number;
   retryMaxMs: number;
+  maxAttempts: number;
   targetDispatchers: TargetDispatcher[];
 };
 
@@ -42,6 +44,7 @@ export type RouterRunResult =
   | { status: "idle" }
   | ({ status: "committed"; eventId: string } & CommitRoutingResult)
   | { status: "lease_lost"; eventId: string }
+  | { status: "dead"; eventId: string; error: Error }
   | { status: "failed"; eventId: string | null; error: Error };
 
 class InvalidStoredRuleError extends Error {
@@ -95,12 +98,16 @@ export class RouterService {
         this.dependencies.retryMaxMs,
         this.dependencies.retryBaseMs * (2 ** Math.max(0, work.attempts - 1)),
       );
-      await this.dependencies.routingRepository.fail(
+      const failed = await this.dependencies.routingRepository.fail(
         work.event.id,
         work.leaseToken,
         normalized.message,
         delay,
-      ).catch(() => false);
+        this.dependencies.maxAttempts,
+      ).catch(() => "lease_lost" as const);
+      if (failed === "dead") {
+        return { status: "dead", eventId: work.event.id, error: normalized };
+      }
       return { status: "failed", eventId: work.event.id, error: normalized };
     }
   }
@@ -116,7 +123,7 @@ export class RouterService {
   }
 
   async getEventRoutes(eventId: string): Promise<EventRouteRecord[]> {
-    if (!/^\d+$/.test(eventId) || BigInt(eventId) <= 0n) return [];
+    if (!DatabaseIds.isValid(eventId)) return [];
     try {
       const routes = await this.dependencies.routingRepository.getEventRoutes(eventId);
       return routes.map((route) => ({
@@ -132,7 +139,7 @@ export class RouterService {
     routes: EventRouteRecord[];
     skips: EventRoutingSkipRecord[];
   }> {
-    if (!/^\d+$/.test(eventId) || BigInt(eventId) <= 0n) {
+    if (!DatabaseIds.isValid(eventId)) {
       return { routes: [], skips: [] };
     }
     try {
@@ -244,6 +251,7 @@ export const createRouterService = (
     leaseMs: dependencies.leaseMs ?? 30_000,
     retryBaseMs: dependencies.retryBaseMs ?? 1_000,
     retryMaxMs: dependencies.retryMaxMs ?? 60_000,
+    maxAttempts: dependencies.maxAttempts ?? 10,
     targetDispatchers: dependencies.targetDispatchers ?? createTargetDispatchers(schedule),
   });
 };

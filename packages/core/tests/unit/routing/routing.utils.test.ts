@@ -91,6 +91,16 @@ describe("EventBridge-style routing patterns", () => {
     expect(() => RoutingUtils.matches({ source: [] }, event))
       .toThrow("match array cannot be empty");
   });
+
+  test("rejects patterns that exceed bounded evaluation complexity", () => {
+    let nested: Record<string, unknown> = { leaf: ["value"] };
+    for (let depth = 0; depth < 13; depth += 1) nested = { child: nested };
+
+    expect(() => RoutingUtils.validatePattern(nested)).toThrow("maximum nesting depth");
+    expect(() => RoutingUtils.validatePattern({
+      source: Array.from({ length: 51 }, (_, index) => `source-${index}`),
+    })).toThrow("too many matchers");
+  });
 });
 
 describe("routing visibility scheduling", () => {

@@ -8,6 +8,7 @@ export default defineConfig({
     escalations: "src/escalations/index.ts",
     events: "src/events/events.service.ts",
     gmail: "src/gmail/index.ts",
+    maintenance: "src/maintenance/index.ts",
     queues: "src/queues/index.ts",
     routing: "src/routing/index.ts",
     telegram: "src/telegram/index.ts",

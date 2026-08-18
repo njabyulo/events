@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
 import type { EventLink, EventToIngest, JsonObject } from "database/events";
 import type { EventEnvelope, EventValidationLimits } from "./events.service.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
 export class EventValidationError extends Error {
   constructor(readonly code: string, message: string) {
@@ -12,6 +12,8 @@ export class EventValidationError extends Error {
 export class EventsUtils {
   static readonly DEFAULT_VALIDATION_LIMITS: EventValidationLimits = {
     detailBytes: 262_144,
+    attributesBytes: 65_536,
+    maxFutureSkewSeconds: 300,
     maxLinks: 25,
     linkKindLength: 64,
     linkValueLength: 512,
@@ -22,7 +24,7 @@ export class EventsUtils {
   private static readonly LINK_KIND_PATTERN = /^[a-z][a-z0-9_]*$/;
 
   static isValidEventId(id: string): boolean {
-    return /^\d+$/.test(id) && BigInt(id) > 0n;
+    return DatabaseIds.isValid(id);
   }
 
   static normalizeEnvelope(
@@ -57,9 +59,15 @@ export class EventsUtils {
         "occurredAt must be a valid timestamp",
       );
     }
+    if (occurredAt.getTime() > Date.now() + limits.maxFutureSkewSeconds * 1_000) {
+      throw new EventValidationError(
+        "occurred_at_in_future",
+        `occurredAt cannot be more than ${limits.maxFutureSkewSeconds} seconds in the future`,
+      );
+    }
 
     const detail = EventsUtils.jsonObject(envelope.detail, "detail");
-    if (EventsUtils.jsonBytes(detail) > limits.detailBytes) {
+    if (EventsUtils.jsonBytes(detail, "detail") > limits.detailBytes) {
       throw new EventValidationError(
         "event_detail_too_large",
         `detail cannot exceed ${limits.detailBytes} bytes`,
@@ -68,9 +76,7 @@ export class EventsUtils {
 
     return {
       source,
-      sourceEventId: envelope.sourceEventId === undefined
-        ? randomUUID()
-        : EventsUtils.requiredString(envelope.sourceEventId, "sourceEventId", 255),
+      sourceEventId: EventsUtils.requiredString(envelope.sourceEventId, "sourceEventId", 255),
       type,
       subject: EventsUtils.optionalString(envelope.subject, "subject", 500),
       actor: EventsUtils.optionalString(envelope.actor, "actor", 320),
@@ -84,9 +90,7 @@ export class EventsUtils {
       causationEventId: EventsUtils.causationId(envelope.causationEventId),
       traceId: EventsUtils.optionalString(envelope.traceId, "traceId", 255),
       detail,
-      attributes: envelope.attributes === undefined
-        ? {}
-        : EventsUtils.jsonObject(envelope.attributes, "attributes"),
+      attributes: EventsUtils.normalizedAttributes(envelope.attributes, limits),
       links: EventsUtils.normalizeLinks(envelope.links, limits),
     };
   }
@@ -123,24 +127,41 @@ export class EventsUtils {
     return value as JsonObject;
   }
 
-  private static jsonBytes(value: JsonObject): number {
+  private static normalizedAttributes(
+    value: unknown,
+    limits: EventValidationLimits,
+  ): JsonObject {
+    const attributes = value === undefined
+      ? {}
+      : EventsUtils.jsonObject(value, "attributes");
+    if (EventsUtils.jsonBytes(attributes, "attributes") > limits.attributesBytes) {
+      throw new EventValidationError(
+        "event_attributes_too_large",
+        `attributes cannot exceed ${limits.attributesBytes} bytes`,
+      );
+    }
+    return attributes;
+  }
+
+  private static jsonBytes(value: JsonObject, field: string): number {
     try {
       return Buffer.byteLength(JSON.stringify(value), "utf8");
     } catch {
-      throw new EventValidationError("invalid_event", "detail must be JSON serializable");
+      throw new EventValidationError("invalid_event", `${field} must be JSON serializable`);
     }
   }
 
   private static causationId(value: unknown): string | null {
     if (value === undefined || value === null) return null;
 
-    const normalized = typeof value === "number" ? String(value) : value;
-    if (
-      typeof normalized !== "string"
-      || !/^\d+$/.test(normalized)
-      || !Number.isSafeInteger(Number(normalized))
-      || Number(normalized) <= 0
-    ) {
+    if (typeof value === "number" && !Number.isSafeInteger(value)) {
+      throw new EventValidationError(
+        "invalid_causation_event_id",
+        "causationEventId numbers must be safe integers; use a string for larger IDs",
+      );
+    }
+    const normalized = DatabaseIds.normalize(value);
+    if (normalized === null) {
       throw new EventValidationError(
         "invalid_causation_event_id",
         "causationEventId must be a positive event ID",

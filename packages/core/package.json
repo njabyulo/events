@@ -15,6 +15,10 @@
       "types": "./dist/gmail.d.mts",
       "default": "./dist/gmail.mjs"
     },
+    "./maintenance": {
+      "types": "./dist/maintenance.d.mts",
+      "default": "./dist/maintenance.mjs"
+    },
     "./consumers": {
       "types": "./dist/consumers.d.mts",
       "default": "./dist/consumers.mjs"

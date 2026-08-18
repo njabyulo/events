@@ -167,7 +167,7 @@ export class TargetsService {
     id: string,
     actor: unknown,
     reason: unknown,
-  ): Promise<{ testId: string; status: "scheduled" }> {
+  ): Promise<{ testId: string; status: "scheduled" | "completed" }> {
     const target = await this.getTarget(id);
     TargetsUtils.assertEditableName(target.name);
     if (!target.enabled) {
@@ -179,14 +179,14 @@ export class TargetsService {
     await this.validate(target.kind, target.config, true, id);
     const normalizedActor = this.requiredText(actor, "actor", 320);
     const normalizedReason = this.requiredText(reason, "reason", 1_000);
-    const testId = await this.run(
+    const test = await this.run(
       () => this.dependencies.targetsRepository.scheduleTargetTest(
         target,
         normalizedActor,
         normalizedReason,
       ),
     );
-    return { testId, status: "scheduled" };
+    return { testId: test.id, status: test.status };
   }
 
   private async validate(

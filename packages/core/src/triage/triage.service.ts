@@ -45,8 +45,16 @@ export class TriageService {
     }));
   }
 
-  async listItems(streamKey: unknown): Promise<TriageItemRecord[]> {
-    return this.run(() => this.repository.listItems(this.streamKey(streamKey)));
+  async listItems(
+    streamKey: unknown,
+    afterId: unknown = "0",
+    limit: unknown = 100,
+  ): Promise<TriageItemRecord[]> {
+    return this.run(() => this.repository.listItems(
+      this.streamKey(streamKey),
+      this.cursor(afterId),
+      this.limit(limit),
+    ));
   }
 
   async ack(
@@ -92,6 +100,22 @@ export class TriageService {
       throw new QueueValidationError("invalid_actor", "actor is required");
     }
     return value.trim();
+  }
+
+  private cursor(value: unknown): string {
+    const cursor = value === undefined ? "0" : value;
+    if (typeof cursor !== "string" || !/^\d+$/.test(cursor)) {
+      throw new QueueValidationError("invalid_cursor", "afterId must be a cursor ID");
+    }
+    return cursor;
+  }
+
+  private limit(value: unknown): number {
+    const limit = Number(value);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+      throw new QueueValidationError("invalid_limit", "limit must be from 1 to 250");
+    }
+    return limit;
   }
 
   private async run<T>(operation: () => Promise<T>): Promise<T> {

@@ -12,7 +12,7 @@ import {
 
 export type EventEnvelope = {
   source: string;
-  sourceEventId?: string;
+  sourceEventId: string;
   type: string;
   subject?: string | null;
   actor?: string | null;
@@ -28,6 +28,8 @@ export type EventEnvelope = {
 
 export type EventValidationLimits = {
   detailBytes: number;
+  attributesBytes: number;
+  maxFutureSkewSeconds: number;
   maxLinks: number;
   linkKindLength: number;
   linkValueLength: number;
@@ -57,9 +59,38 @@ export class EventStoreUnavailableError extends Error {
 export class EventsService {
   constructor(private readonly dependencies: EventsServiceDependencies) {}
 
-  async getEvents(): Promise<StoredEvent[]> {
+  async getEvents(
+    limitValue: unknown = 100,
+    beforeOccurredAt?: unknown,
+    beforeId?: unknown,
+  ): Promise<StoredEvent[]> {
+    const limit = Number(limitValue);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+      throw new EventValidationError("invalid_limit", "limit must be from 1 to 250");
+    }
+    const cursorProvided = beforeOccurredAt !== undefined || beforeId !== undefined;
+    let normalizedTime: string | undefined;
+    let normalizedId: string | undefined;
+    if (cursorProvided) {
+      if (typeof beforeOccurredAt !== "string" || typeof beforeId !== "string") {
+        throw new EventValidationError(
+          "invalid_cursor",
+          "beforeOccurredAt and beforeId must be provided together",
+        );
+      }
+      const parsedTime = new Date(beforeOccurredAt);
+      if (Number.isNaN(parsedTime.getTime()) || !EventsUtils.isValidEventId(beforeId)) {
+        throw new EventValidationError("invalid_cursor", "event cursor is invalid");
+      }
+      normalizedTime = parsedTime.toISOString();
+      normalizedId = beforeId;
+    }
     try {
-      return await this.dependencies.eventsRepository.getEvents();
+      return await this.dependencies.eventsRepository.getEvents(
+        limit,
+        normalizedTime,
+        normalizedId,
+      );
     } catch (error) {
       throw new EventStoreUnavailableError(error);
     }

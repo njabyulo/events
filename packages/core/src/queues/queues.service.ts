@@ -1,5 +1,6 @@
 import type {
   MessageAttemptRecord,
+  DeadLetterMessageRecord,
   QueueMessageRecord,
   QueueRecord,
   QueueStats,
@@ -31,6 +32,7 @@ export type QueuesRepository = Pick<QueuesRepo,
   | "snoozeMessage"
   | "extendVisibility"
   | "listAttempts"
+  | "listDeadLetters"
   | "getStats"
 >;
 
@@ -299,6 +301,20 @@ export class QueuesService {
     return this.run(() => this.repository.listAttempts(
       QueuesUtils.id(messageId, "message_id"),
     ));
+  }
+
+  async listDeadLetters(
+    queueId: string,
+    limitValue: unknown = 100,
+    beforeId?: unknown,
+  ): Promise<DeadLetterMessageRecord[]> {
+    const id = QueuesUtils.id(queueId, "queue_id");
+    await this.getQueue(id);
+    const limit = QueuesUtils.integer(limitValue, "limit", 100, 1, 250);
+    const cursor = beforeId === undefined
+      ? undefined
+      : QueuesUtils.id(beforeId, "before_id");
+    return this.run(() => this.repository.listDeadLetters(id, limit, cursor));
   }
 
   async getStats(queueId: string): Promise<QueueStats> {

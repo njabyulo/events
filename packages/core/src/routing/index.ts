@@ -21,6 +21,7 @@ export type {
   CreateReplayCommand,
   ReplaysRepository,
   ReplaysServiceDependencies,
+  ReplayRunResult,
 } from "./replays.service.js";
 export {
   createRouterService,
@@ -56,6 +57,7 @@ export type {
 } from "./targets.service.js";
 export type {
   ClaimedRoutingWork,
+  ClaimedReplay,
   CommitRoutingResult,
   EventRouteRecord,
   EventRoutingSkipRecord,

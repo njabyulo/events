@@ -41,12 +41,34 @@ describe("EventsUtils", () => {
     );
   });
 
-  test("generates a source event ID when one is not supplied", () => {
-    const event = EventsUtils.normalizeEnvelope({
+  test("requires a source event ID so producer retries remain idempotent", () => {
+    expect(() => EventsUtils.normalizeEnvelope({
       ...validEnvelope,
       sourceEventId: undefined,
+    })).toThrowError(expect.objectContaining<EventValidationError>({ code: "invalid_event" }));
+  });
+
+  test("preserves bigint IDs represented as strings", () => {
+    const event = EventsUtils.normalizeEnvelope({
+      ...validEnvelope,
+      causationEventId: "9223372036854775807",
     });
 
-    expect(event.sourceEventId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(event.causationEventId).toBe("9223372036854775807");
+    expect(() => EventsUtils.normalizeEnvelope({
+      ...validEnvelope,
+      causationEventId: 9_223_372_036_854_775_807,
+    })).toThrowError(expect.objectContaining<EventValidationError>({
+      code: "invalid_causation_event_id",
+    }));
+  });
+
+  test("rejects timestamps beyond the accepted producer clock skew", () => {
+    expect(() => EventsUtils.normalizeEnvelope({
+      ...validEnvelope,
+      occurredAt: new Date(Date.now() + 301_000).toISOString(),
+    })).toThrowError(expect.objectContaining<EventValidationError>({
+      code: "occurred_at_in_future",
+    }));
   });
 });

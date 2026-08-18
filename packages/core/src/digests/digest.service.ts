@@ -38,17 +38,23 @@ export type DigestServiceDependencies = {
   publisher: DigestPublisher;
   consumerName?: string;
   visibilityTimeoutSeconds?: number;
+  batchSize?: number;
   clock?: () => Date;
 };
 
 export class DigestService {
   private readonly consumerName: string;
   private readonly visibilityTimeoutSeconds: number;
+  private readonly batchSize: number;
   private readonly clock: () => Date;
 
   constructor(private readonly dependencies: DigestServiceDependencies) {
     this.consumerName = dependencies.consumerName ?? "digest-scheduler";
     this.visibilityTimeoutSeconds = dependencies.visibilityTimeoutSeconds ?? 300;
+    this.batchSize = dependencies.batchSize ?? 100;
+    if (!Number.isSafeInteger(this.batchSize) || this.batchSize < 1 || this.batchSize > 1_000) {
+      throw new RangeError("Digest batch size must be between 1 and 1000");
+    }
     this.clock = dependencies.clock ?? (() => new Date());
   }
 
@@ -80,6 +86,7 @@ export class DigestService {
       queue.id,
       this.visibilityTimeoutSeconds,
       this.consumerName,
+      this.batchSize,
     ));
     if (messages === null) throw new QueueNotFoundError("Digest queue does not exist");
     if (messages.length === 0) return null;
@@ -108,7 +115,7 @@ export class DigestService {
       source: event.source,
       type: event.type,
       subject: event.subject,
-      summary: event.summary,
+      summary: event.summary?.slice(0, 500) ?? null,
       occurredAt: event.occurredAt,
     }));
     return {

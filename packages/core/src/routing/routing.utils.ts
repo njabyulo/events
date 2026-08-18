@@ -37,6 +37,13 @@ export class RoutingScheduleError extends Error {
 export class RoutingUtils {
   private static readonly OPERATORS = new Set(["prefix", "exists", "numeric"]);
   private static readonly NUMERIC_OPERATORS = new Set([">", ">=", "<", "<=", "=", "!="]);
+  private static readonly MAX_PATTERN_BYTES = 32_768;
+  private static readonly MAX_PATTERN_DEPTH = 12;
+  private static readonly MAX_PATTERN_NODES = 256;
+  private static readonly MAX_MATCHERS_PER_FIELD = 50;
+  private static readonly MAX_KEY_LENGTH = 128;
+  private static readonly MAX_STRING_LENGTH = 512;
+  private static readonly validatedPatterns = new WeakSet<object>();
 
   static validatePattern(pattern: RulePattern): void {
     if (!RoutingUtils.isObject(pattern) || Object.keys(pattern).length === 0) {
@@ -47,14 +54,71 @@ export class RoutingUtils {
       if (Object.keys(pattern).length !== 1 || pattern.$default !== true) {
         throw new RoutingPatternError("pattern.$default", "must be the only key and equal true");
       }
+      RoutingUtils.validatedPatterns.add(pattern);
       return;
     }
 
-    RoutingUtils.validateObject(pattern, "pattern");
+    let encoded: string;
+    try {
+      encoded = JSON.stringify(pattern);
+    } catch {
+      throw new RoutingPatternError("pattern", "must be JSON serializable");
+    }
+    if (Buffer.byteLength(encoded, "utf8") > RoutingUtils.MAX_PATTERN_BYTES) {
+      throw new RoutingPatternError(
+        "pattern",
+        `cannot exceed ${RoutingUtils.MAX_PATTERN_BYTES} bytes`,
+      );
+    }
+
+    const pending = [{ value: pattern, path: "pattern", depth: 1 }];
+    let nodes = 0;
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current) break;
+      nodes += 1;
+      if (nodes > RoutingUtils.MAX_PATTERN_NODES) {
+        throw new RoutingPatternError("pattern", "contains too many nodes");
+      }
+      if (current.depth > RoutingUtils.MAX_PATTERN_DEPTH) {
+        throw new RoutingPatternError(current.path, "exceeds the maximum nesting depth");
+      }
+      for (const [key, constraint] of Object.entries(current.value)) {
+        if (key.length === 0 || key.length > RoutingUtils.MAX_KEY_LENGTH) {
+          throw new RoutingPatternError(current.path, "contains an invalid key length");
+        }
+        const childPath = `${current.path}.${key}`;
+        if (Array.isArray(constraint)) {
+          if (constraint.length === 0) {
+            throw new RoutingPatternError(childPath, "match array cannot be empty");
+          }
+          if (constraint.length > RoutingUtils.MAX_MATCHERS_PER_FIELD) {
+            throw new RoutingPatternError(childPath, "contains too many matchers");
+          }
+          for (const candidate of constraint) {
+            nodes += 1;
+            if (nodes > RoutingUtils.MAX_PATTERN_NODES) {
+              throw new RoutingPatternError("pattern", "contains too many nodes");
+            }
+            RoutingUtils.validateMatcher(candidate, childPath);
+          }
+          continue;
+        }
+
+        if (!RoutingUtils.isObject(constraint)) {
+          throw new RoutingPatternError(childPath, "must be a match array or nested object");
+        }
+        if (Object.keys(constraint).length === 0) {
+          throw new RoutingPatternError(childPath, "nested object cannot be empty");
+        }
+        pending.push({ value: constraint, path: childPath, depth: current.depth + 1 });
+      }
+    }
+    RoutingUtils.validatedPatterns.add(pattern);
   }
 
   static matches(pattern: RulePattern, event: StoredEvent): boolean {
-    RoutingUtils.validatePattern(pattern);
+    if (!RoutingUtils.validatedPatterns.has(pattern)) RoutingUtils.validatePattern(pattern);
     if (pattern.$default === true) return true;
 
     const links = event.links.reduce<Record<string, string[]>>((grouped, link) => {
@@ -125,31 +189,11 @@ export class RoutingUtils {
     return RoutingUtils.findNextLocalMinute(hour * 60 + minute, now, timeZone);
   }
 
-  private static validateObject(value: JsonObject, path: string): void {
-    for (const [key, constraint] of Object.entries(value)) {
-      const childPath = `${path}.${key}`;
-      if (Array.isArray(constraint)) {
-        if (constraint.length === 0) {
-          throw new RoutingPatternError(childPath, "match array cannot be empty");
-        }
-        for (const candidate of constraint) {
-          RoutingUtils.validateMatcher(candidate, childPath);
-        }
-        continue;
-      }
-
-      if (!RoutingUtils.isObject(constraint)) {
-        throw new RoutingPatternError(childPath, "must be a match array or nested object");
-      }
-      if (Object.keys(constraint).length === 0) {
-        throw new RoutingPatternError(childPath, "nested object cannot be empty");
-      }
-      RoutingUtils.validateObject(constraint, childPath);
-    }
-  }
-
   private static validateMatcher(value: unknown, path: string): void {
     if (!RoutingUtils.isObject(value)) {
+      if (typeof value === "string" && value.length > RoutingUtils.MAX_STRING_LENGTH) {
+        throw new RoutingPatternError(path, "contains a string that is too long");
+      }
       if (value === null || ["string", "number", "boolean"].includes(typeof value)) return;
       throw new RoutingPatternError(path, "contains an unsupported exact value");
     }
@@ -160,7 +204,11 @@ export class RoutingUtils {
     }
 
     if ("prefix" in value) {
-      if (typeof value.prefix !== "string" || value.prefix.length === 0) {
+      if (
+        typeof value.prefix !== "string"
+        || value.prefix.length === 0
+        || value.prefix.length > RoutingUtils.MAX_STRING_LENGTH
+      ) {
         throw new RoutingPatternError(path, "prefix must be a non-empty string");
       }
       return;
@@ -174,7 +222,12 @@ export class RoutingUtils {
     }
 
     const numeric = value.numeric;
-    if (!Array.isArray(numeric) || numeric.length === 0 || numeric.length % 2 !== 0) {
+    if (
+      !Array.isArray(numeric)
+      || numeric.length === 0
+      || numeric.length % 2 !== 0
+      || numeric.length > 20
+    ) {
       throw new RoutingPatternError(path, "numeric must contain operator/value pairs");
     }
     for (let index = 0; index < numeric.length; index += 2) {

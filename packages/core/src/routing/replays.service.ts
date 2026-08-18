@@ -1,4 +1,5 @@
 import type {
+  ClaimedReplay,
   ReplayRecord,
   RoutingRepo,
 } from "database/routing";
@@ -22,22 +23,57 @@ export type ReplaysRepository = Pick<
   | "createReplay"
   | "getReplay"
   | "listReplays"
-  | "setReplayStatus"
+  | "claimReplay"
   | "loadReplayEvents"
   | "loadReplayRules"
-  | "commitReplayEvent"
+  | "commitReplayBatch"
+  | "failReplay"
 >;
 
 export type ReplaysServiceDependencies = {
   routingRepository: ReplaysRepository;
   routerService: Pick<RouterService, "decide">;
+  batchSize?: number;
+  leaseSeconds?: number;
+  maxAttempts?: number;
+  retryDelaySeconds?: number;
 };
 
-export class ReplaysService {
-  constructor(private readonly dependencies: ReplaysServiceDependencies) {}
+export type ReplayRunResult =
+  | { status: "idle" }
+  | { status: "batch_committed"; replayId: string; eventCount: number; completed: boolean }
+  | { status: "lease_lost"; replayId: string }
+  | { status: "failed"; replayId: string | null; error: Error };
 
-  async listReplays(): Promise<ReplayRecord[]> {
-    return this.run(() => this.dependencies.routingRepository.listReplays());
+export class ReplaysService {
+  private readonly batchSize: number;
+  private readonly leaseSeconds: number;
+  private readonly maxAttempts: number;
+  private readonly retryDelaySeconds: number;
+
+  constructor(private readonly dependencies: ReplaysServiceDependencies) {
+    this.batchSize = ReplaysService.positiveInteger(dependencies.batchSize, 100, 1_000);
+    this.leaseSeconds = ReplaysService.positiveInteger(dependencies.leaseSeconds, 60, 3_600);
+    this.maxAttempts = ReplaysService.positiveInteger(dependencies.maxAttempts, 5, 100);
+    this.retryDelaySeconds = ReplaysService.positiveInteger(
+      dependencies.retryDelaySeconds,
+      5,
+      3_600,
+    );
+  }
+
+  async listReplays(
+    limitValue: unknown = 100,
+    beforeId?: unknown,
+  ): Promise<ReplayRecord[]> {
+    const limit = Number(limitValue);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+      throw new RangeError("Replay limit must be from 1 to 250");
+    }
+    const cursor = beforeId === undefined
+      ? undefined
+      : ReplaysUtils.positiveId(beforeId, "before_id");
+    return this.run(() => this.dependencies.routingRepository.listReplays(limit, cursor));
   }
 
   async getReplay(id: string): Promise<ReplayRecord> {
@@ -62,38 +98,72 @@ export class ReplaysService {
       );
     }
 
-    const replay = await this.run(() => this.dependencies.routingRepository.createReplay({
+    return this.run(() => this.dependencies.routingRepository.createReplay({
       requestedBy,
       reason,
       eventFilter,
       ruleId,
       ruleVersion,
     }));
+  }
 
+  async runOnce(): Promise<ReplayRunResult> {
+    let replay: ClaimedReplay | null = null;
     try {
-      await this.dependencies.routingRepository.setReplayStatus(replay.id, "running");
-      const events = await this.dependencies.routingRepository.loadReplayEvents(eventFilter);
-      for (const event of events) {
-        const decisions = this.dependencies.routerService.decide(event, rules);
-        if (decisions.length === 0) continue;
-        await this.dependencies.routingRepository.commitReplayEvent(
-          replay.id,
-          event.id,
-          decisions,
-        );
-      }
-      await this.dependencies.routingRepository.setReplayStatus(
-        replay.id,
-        "completed",
-        events.length,
+      replay = await this.dependencies.routingRepository.claimReplay(this.leaseSeconds);
+      if (!replay) return { status: "idle" };
+
+      const rules = await this.dependencies.routingRepository.loadReplayRules(
+        replay.ruleId,
+        replay.ruleVersion,
       );
-      return await this.getReplay(replay.id);
+      if (rules.length === 0) throw new Error("Replay rule version is unavailable");
+
+      const events = await this.dependencies.routingRepository.loadReplayEvents(
+        replay.eventFilter,
+        replay.lastEventId ?? "0",
+        this.batchSize,
+      );
+      const completed = events.length < this.batchSize;
+      const committed = await this.dependencies.routingRepository.commitReplayBatch(
+        replay.id,
+        replay.leaseToken,
+        events.map((event) => ({
+          eventId: event.id,
+          decisions: this.dependencies.routerService.decide(event, rules),
+        })),
+        completed,
+      );
+      if (!committed) return { status: "lease_lost", replayId: replay.id };
+      return {
+        status: "batch_committed",
+        replayId: replay.id,
+        eventCount: events.length,
+        completed,
+      };
     } catch (error) {
-      await this.dependencies.routingRepository.setReplayStatus(replay.id, "failed")
-        .catch(() => undefined);
-      if (error instanceof RoutingNotFoundError) throw error;
-      throw new RoutingStoreUnavailableError(error);
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      if (replay) {
+        await this.dependencies.routingRepository.failReplay(
+          replay.id,
+          replay.leaseToken,
+          normalized.message,
+          this.retryDelaySeconds,
+          this.maxAttempts,
+        ).catch(() => false);
+      }
+      return { status: "failed", replayId: replay?.id ?? null, error: normalized };
     }
+  }
+
+  async drain(maxBatches = 10): Promise<ReplayRunResult[]> {
+    const results: ReplayRunResult[] = [];
+    for (let processed = 0; processed < maxBatches; processed += 1) {
+      const result = await this.runOnce();
+      results.push(result);
+      if (result.status === "idle" || result.status === "failed") break;
+    }
+    return results;
   }
 
   private async run<T>(operation: () => Promise<T>): Promise<T> {
@@ -103,6 +173,18 @@ export class ReplaysService {
       if (error instanceof RoutingNotFoundError) throw error;
       throw new RoutingStoreUnavailableError(error);
     }
+  }
+
+  private static positiveInteger(
+    value: number | undefined,
+    fallback: number,
+    maximum: number,
+  ): number {
+    const resolved = value ?? fallback;
+    if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > maximum) {
+      throw new RangeError(`Replay configuration must be an integer from 1 to ${maximum}`);
+    }
+    return resolved;
   }
 }
 

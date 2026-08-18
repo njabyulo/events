@@ -1,5 +1,6 @@
 import type { ReplayFilter } from "database/routing";
 import { RoutingValidationError } from "./routing.errors.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
 export class ReplaysUtils {
   static normalizeFilter(value: unknown): ReplayFilter {
@@ -21,7 +22,7 @@ export class ReplaysUtils {
     if (record.type !== undefined) filter.type = ReplaysUtils.stringList(record.type, "type");
     if (record.eventIds !== undefined) {
       filter.eventIds = ReplaysUtils.stringList(record.eventIds, "eventIds").map((id) => {
-        if (!/^\d+$/.test(id) || BigInt(id) <= 0n) {
+        if (!DatabaseIds.isValid(id)) {
           throw new RoutingValidationError(
             "invalid_replay_filter",
             "eventIds must contain positive event IDs",
@@ -48,8 +49,14 @@ export class ReplaysUtils {
   }
 
   static positiveId(value: unknown, field: string): string {
-    const normalized = typeof value === "number" ? String(value) : value;
-    if (typeof normalized !== "string" || !/^\d+$/.test(normalized) || BigInt(normalized) <= 0n) {
+    if (typeof value === "number" && !Number.isSafeInteger(value)) {
+      throw new RoutingValidationError(
+        `invalid_${field}`,
+        `${field} numbers must be safe integers; use a string for larger IDs`,
+      );
+    }
+    const normalized = DatabaseIds.normalize(value);
+    if (normalized === null) {
       throw new RoutingValidationError(`invalid_${field}`, `${field} must be a positive ID`);
     }
     return normalized;

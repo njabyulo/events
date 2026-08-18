@@ -1,5 +1,6 @@
 import type { Priority } from "database/queues";
 import { QueueValidationError } from "./queue.errors.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
 export class QueuesUtils {
   static retryDelaySeconds(
@@ -20,10 +21,11 @@ export class QueuesUtils {
   }
 
   static id(value: unknown, field: string): string {
-    if (typeof value !== "string" || !/^\d+$/.test(value) || BigInt(value) <= 0n) {
+    const id = DatabaseIds.normalize(value);
+    if (id === null) {
       throw new QueueValidationError(`invalid_${field}`, `${field} must be a positive ID`);
     }
-    return value;
+    return id;
   }
 
   static name(value: unknown): string {

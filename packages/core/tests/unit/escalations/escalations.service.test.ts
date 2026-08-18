@@ -11,6 +11,8 @@ function escalation(overrides: Partial<ClaimedEscalation> = {}): ClaimedEscalati
     eventId: "101",
     queueId: "1",
     sourceMessageId: "201",
+    routeId: null,
+    targetTestId: null,
     reason: "ignored",
     receiveCount: 3,
     status: "sending",
@@ -85,6 +87,28 @@ describe("EscalationsService", () => {
       "1",
       "00000000-0000-4000-8000-000000000001",
       "SM123",
+    );
+  });
+
+  test("describes routed and test SMS deliveries without claiming they were ignored", async () => {
+    const routed = setup();
+    routed.repository.claimNext.mockResolvedValue(escalation({
+      sourceMessageId: null,
+      routeId: "301",
+    }));
+    await routed.service.runOnce();
+    expect(routed.send).toHaveBeenCalledWith(
+      "[events] Routed event (personal, 2h old):\nAccount security alert",
+    );
+
+    const targetTest = setup();
+    targetTest.repository.claimNext.mockResolvedValue(escalation({
+      sourceMessageId: null,
+      targetTestId: "401",
+    }));
+    await targetTest.service.runOnce();
+    expect(targetTest.send).toHaveBeenCalledWith(
+      "[events] SMS target test (personal, 2h old):\nAccount security alert",
     );
   });
 

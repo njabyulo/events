@@ -1,5 +1,6 @@
 import type { ClaimedEscalation } from "database/escalations";
 import { EscalationValidationError } from "./escalation.errors.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
 export class EscalationsUtils {
   static smsBody(escalation: ClaimedEscalation, now = new Date()): string {
@@ -15,7 +16,12 @@ export class EscalationsUtils {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 320);
-    return `[events] URGENT ignored ${escalation.receiveCount}x (${domain}, ${age} old):\n${summary}`;
+    const context = escalation.sourceMessageId !== null
+      ? `URGENT ignored ${escalation.receiveCount}x`
+      : escalation.targetTestId !== null
+        ? "SMS target test"
+        : "Routed event";
+    return `[events] ${context} (${domain}, ${age} old):\n${summary}`;
   }
 
   static retryDelaySeconds(
@@ -41,6 +47,19 @@ export class EscalationsUtils {
     const normalized = value.trim();
     if (normalized.length > maximum) {
       throw new EscalationValidationError(`${field} must be at most ${maximum} characters`);
+    }
+    return normalized;
+  }
+
+  static positiveId(value: unknown, field: string): string {
+    if (typeof value === "number" && !Number.isSafeInteger(value)) {
+      throw new EscalationValidationError(
+        `${field} numbers must be safe integers; use a string for larger IDs`,
+      );
+    }
+    const normalized = DatabaseIds.normalize(value);
+    if (normalized === null) {
+      throw new EscalationValidationError(`${field} must be a positive ID`);
     }
     return normalized;
   }

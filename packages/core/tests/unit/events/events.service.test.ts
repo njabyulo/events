@@ -61,6 +61,7 @@ test("classified events retain causation to an existing source event", async () 
 
   await service.ingestEvent({
     source: "classifier",
+    sourceEventId: "classification-2",
     type: "notification.classified",
     occurredAt: "2026-08-16T10:01:00.000Z",
     causationEventId: "1",
@@ -85,6 +86,7 @@ test("rejects causation pointing at a missing event", async () => {
 
   await expect(service.ingestEvent({
     source: "classifier",
+    sourceEventId: "classification-404",
     type: "notification.classified",
     occurredAt: "2026-08-16T10:01:00.000Z",
     causationEventId: "404",

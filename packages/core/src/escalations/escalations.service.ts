@@ -134,8 +134,15 @@ export class EscalationsService {
     return processed;
   }
 
-  list(): Promise<EscalationRecord[]> {
-    return this.repository.list();
+  list(limitValue: unknown = 100, beforeId?: unknown): Promise<EscalationRecord[]> {
+    const limit = Number(limitValue);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+      throw new RangeError("Escalation limit must be from 1 to 250");
+    }
+    const cursor = beforeId === undefined
+      ? undefined
+      : EscalationsUtils.positiveId(beforeId, "before_id");
+    return this.repository.list(limit, cursor);
   }
 
   listAttempts(id: string): Promise<EscalationAttemptRecord[]> {

@@ -6,6 +6,7 @@ import type {
 } from "database/routing";
 import { RoutingConflictError, RoutingValidationError } from "./routing.errors.js";
 import { RoutingUtils } from "./routing.utils.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
 export type SmsTargetReadiness = {
   twilioCredentialsPresent: boolean;
@@ -72,11 +73,7 @@ export class TargetsUtils {
   static validateQueueConfig(config: JsonObject, queue: QueueRecord | null): void {
     TargetsUtils.assertOnlyKeys(config, ["queueId"]);
     const queueId = config.queueId;
-    if (
-      (typeof queueId !== "string" && typeof queueId !== "number")
-      || !/^\d+$/.test(String(queueId))
-      || BigInt(String(queueId)) <= 0n
-    ) {
+    if (DatabaseIds.normalize(queueId) === null) {
       throw new RoutingValidationError(
         "invalid_queue_target",
         "Queue target config.queueId must be a positive queue ID",

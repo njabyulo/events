@@ -17,8 +17,39 @@ export type ThreadsRepository = Pick<ThreadsRepo,
 export class ThreadsService {
   constructor(private readonly repository: ThreadsRepository) {}
 
-  async listThreads(streamKey: unknown): Promise<ThreadSummaryRecord[]> {
-    return this.run(() => this.repository.listThreads(this.streamKey(streamKey)));
+  async listThreads(
+    streamKey: unknown,
+    limitValue: unknown = 100,
+    beforeLastEventAt?: unknown,
+    beforeId?: unknown,
+  ): Promise<ThreadSummaryRecord[]> {
+    const limit = Number(limitValue);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+      throw new QueueValidationError("invalid_limit", "limit must be from 1 to 250");
+    }
+    const cursorProvided = beforeLastEventAt !== undefined || beforeId !== undefined;
+    let time: string | undefined;
+    let id: string | undefined;
+    if (cursorProvided) {
+      if (typeof beforeLastEventAt !== "string" || typeof beforeId !== "string") {
+        throw new QueueValidationError(
+          "invalid_cursor",
+          "beforeLastEventAt and beforeId must be provided together",
+        );
+      }
+      const parsedTime = new Date(beforeLastEventAt);
+      id = QueuesUtils.id(beforeId, "before_id");
+      if (Number.isNaN(parsedTime.getTime())) {
+        throw new QueueValidationError("invalid_cursor", "thread cursor is invalid");
+      }
+      time = parsedTime.toISOString();
+    }
+    return this.run(() => this.repository.listThreads(
+      this.streamKey(streamKey),
+      limit,
+      time,
+      id,
+    ));
   }
 
   async getThread(id: string): Promise<ThreadRecord> {

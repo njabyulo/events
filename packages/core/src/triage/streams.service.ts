@@ -1,13 +1,23 @@
 import type { StreamMessageRecord, StreamsRepo } from "database/triage";
 import { QueueStoreUnavailableError, QueueValidationError } from "../queues/queue.errors.js";
+import { DatabaseIds } from "../shared/database-ids.js";
 
-export type StreamsRepository = Pick<StreamsRepo, "getHighWaterMark" | "listMessages">;
+export type StreamsRepository = Pick<
+  StreamsRepo,
+  "getHighWaterMark" | "getMessageStreamKey" | "listMessages"
+>;
 
 export class StreamsService {
   constructor(private readonly repository: StreamsRepository) {}
 
   async getHighWaterMark(streamKey: unknown): Promise<string> {
     return this.run(() => this.repository.getHighWaterMark(this.streamKey(streamKey)));
+  }
+
+  async getMessageStreamKey(messageId: unknown): Promise<string | null> {
+    return this.run(() => this.repository.getMessageStreamKey(
+      this.cursor(messageId, "message_id"),
+    ));
   }
 
   async listMessages(
@@ -32,8 +42,11 @@ export class StreamsService {
   }
 
   private cursor(value: unknown, field: string): string {
-    const cursor = typeof value === "string" && value.length > 0 ? value : "0";
-    if (!/^\d+$/.test(cursor)) {
+    const cursor = DatabaseIds.normalize(
+      typeof value === "string" && value.length > 0 ? value : "0",
+      true,
+    );
+    if (cursor === null) {
       throw new QueueValidationError(`invalid_${field}`, `${field} must be a cursor ID`);
     }
     return cursor;
