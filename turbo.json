@@ -28,6 +28,10 @@
     },
     "dev:db:migrate": {
       "cache": false
+    },
+    "dev:db:seed": {
+      "dependsOn": ["dev:db:migrate"],
+      "cache": false
     }
   }
 }

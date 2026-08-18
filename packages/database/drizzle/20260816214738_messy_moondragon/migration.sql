@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX "targets_active_sse_stream_key" ON "targets" (("config"->>'streamKey')) WHERE "kind" = 'sse' and "deleted_at" is null;

@@ -1,0 +1,3 @@
+DROP INDEX "queue_messages_group_idx";--> statement-breakpoint
+CREATE INDEX "queue_messages_group_idx" ON "queue_messages" ("queue_id","message_group_id","id");--> statement-breakpoint
+ALTER TABLE "escalation_attempts" DROP CONSTRAINT "escalation_attempts_outcome_check", ADD CONSTRAINT "escalation_attempts_outcome_check" CHECK ("outcome" in ('send_reserved', 'sent', 'retry_scheduled', 'failed', 'rate_limited'));

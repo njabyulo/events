@@ -2,14 +2,14 @@ import type { Priority, StoredEvent } from "../routing/index.js";
 
 export type TriageStatus = "pending" | "snoozed" | "acked";
 export type ThreadStatus = "open" | "snoozed" | "acked";
-export type TriageChannel = "web" | "digest";
+export type TriageChannel = "web" | "digest" | "telegram" | "sms";
 
 export type TriageDecisionRecord = {
   domain: string;
   priority: Priority;
   channel: TriageChannel;
   brief: string;
-  decidedBy: "rule-stub";
+  decidedBy: "rule-stub" | "strands-agent";
   reason: string;
 };
 
@@ -56,6 +56,8 @@ export type ThreadRecord = {
   messages: StoredEvent[];
 };
 
+export type ThreadSummaryRecord = Omit<ThreadRecord, "messages">;
+
 export type StreamMessageRecord = {
   id: string;
   streamKey: string;
@@ -63,10 +65,23 @@ export type StreamMessageRecord = {
   eventId: string;
   routeId: string | null;
   threadId: string | null;
-  triageItem: TriageItemRecord | null;
+  triageItem: Omit<TriageItemRecord, "event"> | null;
   data: Record<string, unknown>;
   createdAt: string;
-  event: StoredEvent;
+  event: Pick<StoredEvent,
+    | "id"
+    | "source"
+    | "sourceEventId"
+    | "type"
+    | "subject"
+    | "actor"
+    | "summary"
+    | "occurredAt"
+    | "ingestedAt"
+    | "correlationId"
+    | "causationEventId"
+    | "traceId"
+  >;
 };
 
 export type TriageActionResult = "updated" | "stale" | "not_found";

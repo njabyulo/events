@@ -12,6 +12,7 @@ import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
 import type {
   ThreadRecord,
+  ThreadSummaryRecord,
   TriageActionResult,
 } from "./triage.types.js";
 
@@ -56,36 +57,35 @@ function toThread(
   };
 }
 
+function toThreadSummary(row: ThreadRow, pendingItemCount: number): ThreadSummaryRecord {
+  const { messages: _messages, ...summary } = toThread(row, pendingItemCount, []);
+  return summary;
+}
+
 export class ThreadsRepo {
   constructor(private readonly dependencies: ThreadsRepoDependencies) {}
 
-  async listThreads(streamKey: string): Promise<ThreadRecord[]> {
+  async listThreads(streamKey: string, limit?: number): Promise<ThreadSummaryRecord[]> {
     const rows = await this.dependencies.database
-      .select({ thread: threadsTable, itemId: triageItemsTable.id })
+      .select({
+        thread: threadsTable,
+        pendingItemCount: sql<number>`count(${triageItemsTable.id})::int`,
+      })
       .from(threadsTable)
       .innerJoin(triageItemsTable, and(
         eq(triageItemsTable.thread_id, threadsTable.id),
         eq(triageItemsTable.stream_key, streamKey),
         eq(triageItemsTable.status, "pending"),
       ))
-      .orderBy(desc(threadsTable.last_event_at), desc(threadsTable.id));
-    if (rows.length === 0) return [];
-
-    const threadRows = new Map<number, ThreadRow>();
-    const counts = new Map<number, number>();
-    for (const { thread } of rows) {
-      threadRows.set(thread.id, thread);
-      counts.set(thread.id, (counts.get(thread.id) ?? 0) + 1);
-    }
-    const messages = await this.loadMessages([...threadRows.keys()]);
-    return [...threadRows.values()].map((thread) => toThread(
-      thread,
-      counts.get(thread.id) ?? 0,
-      messages.get(thread.id) ?? [],
+      .groupBy(threadsTable.id)
+      .orderBy(desc(threadsTable.last_event_at), desc(threadsTable.id))
+      .limit(limit ?? 1_000);
+    return rows.map(({ thread, pendingItemCount }) => (
+      toThreadSummary(thread, Number(pendingItemCount))
     ));
   }
 
-  async getThread(id: string): Promise<ThreadRecord | null> {
+  async getThread(id: string, historyLimit = 250): Promise<ThreadRecord | null> {
     const parsed = numericId(id);
     if (!parsed) return null;
     const [thread] = await this.dependencies.database.select().from(threadsTable)
@@ -98,8 +98,11 @@ export class ThreadsRepo {
       eq(triageItemsTable.thread_id, parsed),
       eq(triageItemsTable.status, "pending"),
     ));
-    const messages = await this.loadMessages([parsed]);
-    return toThread(thread, Number(count?.value ?? 0), messages.get(parsed) ?? []);
+    const messages = await this.loadMessages(
+      parsed,
+      Math.max(1, Math.min(historyLimit, 1_000)),
+    );
+    return toThread(thread, Number(count?.value ?? 0), messages);
   }
 
   async ackThread(threadId: string, actor: string): Promise<TriageActionResult> {
@@ -223,29 +226,27 @@ export class ThreadsRepo {
     });
   }
 
-  private async loadMessages(threadIds: number[]): Promise<Map<number, StoredEvent[]>> {
-    const rows = await this.dependencies.database
+  private async loadMessages(threadId: number, limit: number): Promise<StoredEvent[]> {
+    const messageIds = await this.dependencies.database
       .select({
-        threadId: threadMessagesTable.thread_id,
-        event: eventsTable,
-        link: eventLinksTable,
+        eventId: threadMessagesTable.event_id,
       })
       .from(threadMessagesTable)
       .innerJoin(eventsTable, eq(eventsTable.id, threadMessagesTable.event_id))
+      .where(eq(threadMessagesTable.thread_id, threadId))
+      .orderBy(desc(eventsTable.occurred_at), desc(eventsTable.id))
+      .limit(limit);
+    if (messageIds.length === 0) return [];
+    const rows = await this.dependencies.database
+      .select({ event: eventsTable, link: eventLinksTable })
+      .from(eventsTable)
       .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, eventsTable.id))
-      .where(inArray(threadMessagesTable.thread_id, threadIds))
-      .orderBy(asc(eventsTable.occurred_at), asc(eventsTable.id));
-    const result = new Map<number, StoredEvent[]>();
-    const eventThread = new Map<string, number>();
-    for (const row of rows) eventThread.set(String(row.event.id), row.threadId);
-    for (const event of toStoredEvents(rows.map(({ event, link }) => ({ event, link })))) {
-      const threadId = eventThread.get(event.id);
-      if (threadId === undefined) continue;
-      const list = result.get(threadId) ?? [];
-      list.push(event);
-      result.set(threadId, list);
-    }
-    return result;
+      .where(inArray(eventsTable.id, messageIds.map(({ eventId }) => eventId)));
+    const events = new Map(toStoredEvents(rows).map((event) => [event.id, event]));
+    return messageIds.reverse().flatMap(({ eventId }) => {
+      const event = events.get(String(eventId));
+      return event ? [event] : [];
+    });
   }
 
   private async appendAction(

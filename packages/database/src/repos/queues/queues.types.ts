@@ -31,7 +31,7 @@ export type MessageAttemptRecord = {
   consumerName: string | null;
   receiptHandle: string | null;
   receiveCount: number;
-  outcome: "received" | "acked" | "nacked" | "released" | "visibility_extended" | "snoozed";
+  outcome: "received" | "acked" | "nacked" | "released" | "visibility_extended" | "snoozed" | "escalated";
   visibleUntil: string | null;
   detail: Record<string, unknown>;
   occurredAt: string;

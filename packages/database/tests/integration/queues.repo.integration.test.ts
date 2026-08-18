@@ -4,12 +4,14 @@ import { readdir, readFile } from "node:fs/promises";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { createEscalationsRepo, type EscalationsRepo } from "../../src/repos/escalations/escalations.repo.js";
 import { createEventsRepo, type EventsRepo } from "../../src/repos/events/events.repo.js";
 import type { EventToIngest } from "../../src/repos/events/events.types.js";
 import { createQueuesRepo, type QueuesRepo } from "../../src/repos/queues/queues.repo.js";
 import { createStreamsRepo, type StreamsRepo } from "../../src/repos/triage/streams.repo.js";
 import { createThreadsRepo, type ThreadsRepo } from "../../src/repos/triage/threads.repo.js";
 import { createTriageRepo, type TriageRepo } from "../../src/repos/triage/triage.repo.js";
+import { seedSystemResources } from "../../seeds/system-resources.seed.js";
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const schema = `queues_test_${randomUUID().replaceAll("-", "")}`;
@@ -24,6 +26,7 @@ let secondQueuesRepo: QueuesRepo;
 let triageRepo: TriageRepo;
 let streamsRepo: StreamsRepo;
 let threadsRepo: ThreadsRepo;
+let escalationsRepo: EscalationsRepo;
 
 function event(): EventToIngest {
   return {
@@ -63,16 +66,20 @@ beforeAll(async () => {
   testPool = new Pool({ connectionString, options: `-c search_path=${schema}` });
   await applyMigrations();
   const database = drizzle({ client: testPool });
+  await seedSystemResources(database);
   eventsRepo = createEventsRepo({ database, eventsChannel: "events_ready_test" });
   queuesRepo = createQueuesRepo({ database, queueChannel });
   secondQueuesRepo = createQueuesRepo({ database, queueChannel });
   triageRepo = createTriageRepo({ database, sseChannel });
   streamsRepo = createStreamsRepo(database);
   threadsRepo = createThreadsRepo({ database, sseChannel });
+  escalationsRepo = createEscalationsRepo(database);
 }, 30_000);
 
 beforeEach(async () => {
   await testPool.query(`
+    delete from escalation_attempts;
+    delete from escalations;
     delete from stream_messages;
     delete from triage_items;
     delete from thread_messages;
@@ -94,7 +101,7 @@ afterAll(async () => {
   await adminPool?.end();
 });
 
-async function enqueue() {
+async function enqueue(messageGroupId = "career") {
   const stored = await eventsRepo.ingestEvent(event());
   const queue = await queuesRepo.getQueueByName("career");
   if (!queue) throw new Error("Seeded career queue is missing");
@@ -102,7 +109,7 @@ async function enqueue() {
     queueId: queue.id,
     eventId: stored.id,
     delaySeconds: 0,
-    messageGroupId: "career",
+    messageGroupId,
     priority: "urgent",
   });
   if (!message) throw new Error("Message was not enqueued");
@@ -214,6 +221,32 @@ describe("queue claims and visibility", () => {
       consumerName: "dashboard",
     })).resolves.toEqual([]);
   });
+
+  test("FIFO claims one head per group while unrelated groups continue", async () => {
+    const first = await enqueue("same-thread");
+    const second = await enqueue("same-thread");
+    const sibling = await enqueue("other-thread");
+
+    const claimed = await queuesRepo.receiveMessages({
+      queueId: first.queue.id,
+      maxMessages: 10,
+      consumerName: "fifo-worker",
+    }) ?? [];
+    expect(claimed.map(({ id }) => id)).toEqual([first.message.id, sibling.message.id]);
+    await expect(queuesRepo.ackMessage(
+      first.queue.id,
+      first.message.id,
+      claimed[0]!.receiptHandle!,
+      "fifo-worker",
+    )).resolves.toBe(true);
+
+    const next = await queuesRepo.receiveMessages({
+      queueId: first.queue.id,
+      maxMessages: 10,
+      consumerName: "fifo-worker",
+    }) ?? [];
+    expect(next.map(({ id }) => id)).toEqual([second.message.id]);
+  });
 });
 
 describe("dashboard inbox and durable stream", () => {
@@ -256,6 +289,9 @@ describe("dashboard inbox and durable stream", () => {
       "triage.item.available",
     ]);
     expect(messages[1]?.triageItem?.receiptHandle).toBe(second!.receiptHandle);
+    expect(messages[1]?.triageItem).not.toHaveProperty("event");
+    expect(messages[1]?.event).not.toHaveProperty("detail");
+    expect(messages[1]?.event).not.toHaveProperty("attributes");
     await expect(streamsRepo.getHighWaterMark("triage")).resolves.toBe(messages[1]!.id);
     await expect(streamsRepo.listMessages("triage", messages[0]!.id)).resolves.toMatchObject([
       { id: messages[1]!.id },
@@ -285,7 +321,7 @@ describe("dashboard inbox and durable stream", () => {
 
   test("shared thread ACK deletes every pending message atomically", async () => {
     const first = await enqueue();
-    const second = await enqueue();
+    const second = await enqueue("career-secondary");
     const firstClaim = (await queuesRepo.receiveMessages({
       queueId: first.queue.id,
       maxMessages: 10,
@@ -296,6 +332,7 @@ describe("dashboard inbox and durable stream", () => {
 
     const [thread] = await threadsRepo.listThreads("triage");
     expect(thread).toMatchObject({ pendingItemCount: 2, status: "open" });
+    expect(thread).not.toHaveProperty("messages");
     await expect(threadsRepo.ackThread(thread!.id, "example-user")).resolves.toBe("updated");
     await expect(threadsRepo.listThreads("triage")).resolves.toEqual([]);
     const remaining = await testPool.query("select count(*)::int as count from queue_messages");
@@ -329,6 +366,185 @@ describe("retry scheduling", () => {
       outcome: "nacked",
       detail: { error: "simulated failure", delaySeconds: 17 },
     });
+  });
+
+  test("an exhausted urgent FIFO head moves atomically to one escalation", async () => {
+    const { queue, message } = await enqueue("blocked-thread");
+    for (let attempt = 1; attempt <= queue.maxReceiveCount; attempt += 1) {
+      const [claimed] = await queuesRepo.receiveMessages({
+        queueId: queue.id,
+        maxMessages: 1,
+        consumerName: "poison-worker",
+      }) ?? [];
+      expect(claimed?.receiveCount).toBe(attempt);
+      await expect(queuesRepo.nackMessage({
+        queueId: queue.id,
+        messageId: message.id,
+        receiptHandle: claimed!.receiptHandle!,
+        consumerName: "poison-worker",
+        delaySeconds: 10,
+        error: "poisoned",
+      })).resolves.toBe(true);
+      if (attempt < queue.maxReceiveCount) {
+        await testPool.query(
+          "update queue_messages set visible_at = now() - interval '1 second' where id = $1",
+          [message.id],
+        );
+      }
+    }
+
+    await expect(escalationsRepo.list()).resolves.toMatchObject([{
+      sourceMessageId: message.id,
+      eventId: message.eventId,
+      status: "pending",
+      receiveCount: queue.maxReceiveCount,
+    }]);
+    const remaining = await testPool.query(
+      "select count(*)::int as count from queue_messages where id = $1",
+      [message.id],
+    );
+    expect(remaining.rows[0]).toEqual({ count: 0 });
+    expect((await queuesRepo.listAttempts(message.id)).at(-1)?.outcome).toBe("escalated");
+
+    const claims = await Promise.all([
+      escalationsRepo.claimNext(60),
+      escalationsRepo.claimNext(60),
+    ]);
+    const claimed = claims.filter((value) => value !== null);
+    expect(claimed).toHaveLength(1);
+    await expect(escalationsRepo.markSent(
+      claimed[0]!.id,
+      randomUUID(),
+      "SM-stale",
+    )).resolves.toBe(false);
+    await expect(escalationsRepo.reserveSendCapacity(
+      claimed[0]!.id,
+      claimed[0]!.leaseToken,
+      { perHour: 5, perDay: 10, maxAttempts: 5 },
+    )).resolves.toEqual({ status: "reserved", attemptCount: 1 });
+    await expect(escalationsRepo.markSent(
+      claimed[0]!.id,
+      claimed[0]!.leaseToken,
+      "SM123",
+    )).resolves.toBe(true);
+    await expect(escalationsRepo.listAttempts(claimed[0]!.id)).resolves.toMatchObject([
+      { outcome: "send_reserved" },
+      { outcome: "sent", smsSid: "SM123" },
+    ]);
+  });
+
+  test("reserves SMS rate-limit capacity atomically across workers", async () => {
+    const { queue, message } = await enqueue("rate-limit-one");
+    await testPool.query(`
+      insert into escalations (
+        event_id, queue_id, source_message_id, reason, receive_count
+      ) values
+        ($1, $2, $3, 'first', 3),
+        ($1, $2, $4, 'second', 3)
+    `, [message.eventId, queue.id, Number(message.id) + 1_000_000, Number(message.id) + 2_000_000]);
+    const [first, second] = await Promise.all([
+      escalationsRepo.claimNext(60),
+      escalationsRepo.claimNext(60),
+    ]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    const reservations = await Promise.all([
+      escalationsRepo.reserveSendCapacity(first!.id, first!.leaseToken, {
+        perHour: 1,
+        perDay: 1,
+        maxAttempts: 5,
+      }),
+      escalationsRepo.reserveSendCapacity(second!.id, second!.leaseToken, {
+        perHour: 1,
+        perDay: 1,
+        maxAttempts: 5,
+      }),
+    ]);
+
+    expect(reservations.filter(({ status }) => status === "reserved")).toHaveLength(1);
+    expect(reservations.filter(({ status }) => status === "rate_limited")).toHaveLength(1);
+    const counts = await testPool.query(`select
+      (select count(*)::int from escalation_attempts where outcome = 'send_reserved')
+        as reservations,
+      sum(attempt_count)::int as attempts
+      from escalations`);
+    expect(counts.rows[0]).toEqual({ reservations: 1, attempts: 1 });
+  });
+
+  test("an urgent message whose final lease expires moves to escalation once", async () => {
+    const { queue, message } = await enqueue("crashing-thread");
+
+    for (let attempt = 1; attempt <= queue.maxReceiveCount; attempt += 1) {
+      const [claimed] = await queuesRepo.receiveMessages({
+        queueId: queue.id,
+        maxMessages: 1,
+        consumerName: "crashing-worker",
+      }) ?? [];
+      expect(claimed?.receiveCount).toBe(attempt);
+      await testPool.query(
+        "update queue_messages set visible_at = now() - interval '1 second' where id = $1",
+        [message.id],
+      );
+    }
+
+    await expect(queuesRepo.receiveMessages({
+      queueId: queue.id,
+      maxMessages: 1,
+      consumerName: "recovery-worker",
+    })).resolves.toEqual([]);
+    await expect(escalationsRepo.list()).resolves.toMatchObject([{
+      sourceMessageId: message.id,
+      status: "pending",
+      receiveCount: queue.maxReceiveCount,
+    }]);
+    const remaining = await testPool.query(
+      "select count(*)::int as count from queue_messages where id = $1",
+      [message.id],
+    );
+    expect(remaining.rows[0]).toEqual({ count: 0 });
+    expect((await queuesRepo.listAttempts(message.id)).at(-1)).toMatchObject({
+      consumerName: "recovery-worker",
+      outcome: "escalated",
+      detail: { reason: "visibility expired after final receive" },
+    });
+  });
+
+  test("bounds expired-message maintenance without reclaiming an exhausted message", async () => {
+    const { queue, message } = await enqueue("maintenance-batch");
+    await testPool.query(`
+      update queue_messages
+      set receive_count = $2, visible_at = now() - interval '1 second'
+      where id = $1
+    `, [message.id, queue.maxReceiveCount]);
+    await testPool.query(`
+      insert into queue_messages (
+        queue_id, event_id, message_group_id, priority, visible_at, receive_count
+      )
+      select $1, $2, 'maintenance-' || value, 'urgent',
+        now() - interval '1 second', $3
+      from generate_series(1, 100) as value
+    `, [queue.id, message.eventId, queue.maxReceiveCount]);
+
+    await expect(queuesRepo.receiveMessages({
+      queueId: queue.id,
+      maxMessages: 1,
+      consumerName: "maintenance-worker",
+    })).resolves.toEqual([]);
+    const firstPass = await testPool.query(`select
+      (select count(*)::int from escalations) as escalated,
+      (select count(*)::int from queue_messages) as remaining`);
+    expect(firstPass.rows[0]).toEqual({ escalated: 100, remaining: 1 });
+
+    await expect(queuesRepo.receiveMessages({
+      queueId: queue.id,
+      maxMessages: 1,
+      consumerName: "maintenance-worker",
+    })).resolves.toEqual([]);
+    const secondPass = await testPool.query(`select
+      (select count(*)::int from escalations) as escalated,
+      (select count(*)::int from queue_messages) as remaining`);
+    expect(secondPass.rows[0]).toEqual({ escalated: 101, remaining: 0 });
   });
 });
 

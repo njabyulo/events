@@ -17,6 +17,7 @@ import type {
 } from "../../src/repos/routing/routing.types.js";
 import { createRulesRepo, type RulesRepo } from "../../src/repos/rules/rules.repo.js";
 import { createTargetsRepo, type TargetsRepo } from "../../src/repos/targets/targets.repo.js";
+import { seedSystemResources } from "../../seeds/system-resources.seed.js";
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const schema = `routing_test_${randomUUID().replaceAll("-", "")}`;
@@ -101,7 +102,7 @@ function decisionsFor(rule: RuleSnapshot): RoutingDecision[] {
 }
 
 function selectedRule(work: ClaimedRoutingWork): RuleSnapshot {
-  return work.rules[0] ?? work.defaultRule;
+  return work.rules.find(({ name }) => !name.startsWith("system.")) ?? work.defaultRule;
 }
 
 async function createQueueTarget(name: string, queueName = "career") {
@@ -126,6 +127,7 @@ beforeAll(async () => {
   await applyMigrations();
 
   const database = drizzle({ client: testPool });
+  await seedSystemResources(database);
   eventsRepo = createEventsRepo({ database, eventsChannel: "events_ready_test" });
   routingRepo = createRoutingRepo({ database, sseChannel });
   secondRoutingRepo = createRoutingRepo({ database, sseChannel });
@@ -149,15 +151,16 @@ beforeEach(async () => {
     delete from event_links;
     delete from events;
     delete from rule_targets
-      where rule_id <> (select id from rules where name = 'system.unclassified');
-    delete from targets where name <> 'system.unclassified.queue';
+      where rule_id in (select id from rules where name not like 'system.%')
+         or target_id in (select id from targets where name not like 'system.%');
+    delete from targets where name not like 'system.%';
     delete from rule_versions
-      where rule_id <> (select id from rules where name = 'system.unclassified');
-    delete from rules where name <> 'system.unclassified';
+      where rule_id in (select id from rules where name not like 'system.%');
+    delete from rules where name not like 'system.%';
     update targets set enabled = true, deleted_at = null
-      where name = 'system.unclassified.queue';
+      where name like 'system.%';
     update rules set enabled = true, deleted_at = null, validation_error = null, invalid_at = null
-      where name = 'system.unclassified';
+      where name like 'system.%';
   `);
 });
 
@@ -168,6 +171,20 @@ afterAll(async () => {
 });
 
 describe("routing coordination and idempotency", () => {
+  test("system seed is idempotent and keeps one version per unchanged rule", async () => {
+    const database = drizzle({ client: testPool });
+    await seedSystemResources(database);
+    await seedSystemResources(database);
+
+    const counts = await testPool.query(`select
+      (select count(*)::int from queues where deleted_at is null) as queues,
+      (select count(*)::int from targets where name like 'system.%' and deleted_at is null) as targets,
+      (select count(*)::int from rules where name like 'system.%' and deleted_at is null) as rules,
+      (select count(*)::int from rule_versions
+        where rule_id in (select id from rules where name like 'system.%')) as versions`);
+    expect(counts.rows[0]).toEqual({ queues: 5, targets: 4, rules: 8, versions: 8 });
+  });
+
   test("two router instances cannot claim the same event", async () => {
     await eventsRepo.ingestEvent(event());
 

@@ -267,6 +267,7 @@ export const queueMessagesTable = pgTable("queue_messages", {
   index("queue_messages_group_idx").on(
     table.queue_id,
     table.message_group_id,
+    table.id,
   ),
 ]);
 

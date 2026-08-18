@@ -40,7 +40,7 @@ export const messageAttemptsTable = pgTable("message_attempts", {
 }, (table) => [
   check(
     "message_attempts_outcome_check",
-    sql`${table.outcome} in ('received', 'acked', 'nacked', 'released', 'visibility_extended', 'snoozed')`,
+    sql`${table.outcome} in ('received', 'acked', 'nacked', 'released', 'visibility_extended', 'snoozed', 'escalated')`,
   ),
   index("message_attempts_message_idx").on(table.message_id, table.occurred_at),
   index("message_attempts_event_idx").on(table.event_id, table.occurred_at),
@@ -91,7 +91,7 @@ export const triageItemsTable = pgTable("triage_items", {
   ),
   check(
     "triage_items_channel_check",
-    sql`${table.channel} in ('web', 'digest')`,
+    sql`${table.channel} in ('web', 'digest', 'telegram', 'sms')`,
   ),
   check(
     "triage_items_status_check",

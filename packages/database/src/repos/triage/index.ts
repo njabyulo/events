@@ -5,6 +5,7 @@ export type { StoreClaimInput, TriageRepoDependencies } from "./triage.repo.js";
 export type {
   StreamMessageRecord,
   ThreadRecord,
+  ThreadSummaryRecord,
   ThreadStatus,
   TriageActionResult,
   TriageChannel,

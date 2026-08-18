@@ -35,7 +35,7 @@ export const threadsTable = pgTable("threads", {
   ),
   check(
     "threads_channel_check",
-    sql`${table.channel} in ('web', 'digest')`,
+    sql`${table.channel} in ('web', 'digest', 'telegram', 'sms')`,
   ),
   check(
     "threads_status_check",

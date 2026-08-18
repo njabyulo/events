@@ -2,6 +2,7 @@ import { defineConfig } from "tsdown";
 
 export default defineConfig({
   entry: {
+    escalations: "src/repos/escalations/index.ts",
     events: "src/repos/events/index.ts",
     outbox: "src/repos/outbox/index.ts",
     queues: "src/repos/queues/index.ts",

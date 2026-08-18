@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c66a2eef-ddd1-405c-b9c7-9048a6c144d3",
+  "id": "f30470dd-2b55-4d15-8b4f-13c333a8adf8",
   "prevIds": [
-    "72d3e00e-39e1-47ef-b47d-b02621c05fd1"
+    "8ba59884-45dc-45c2-bbb8-51eb1c8b8c0a"
   ],
   "ddl": [
     {
@@ -27,6 +27,18 @@
     {
       "isRlsEnabled": false,
       "name": "source_cursors",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "escalation_attempts",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "escalations",
       "entityType": "tables",
       "schema": "public"
     },
@@ -93,6 +105,18 @@
     {
       "isRlsEnabled": false,
       "name": "targets",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "thread_messages",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "threads",
       "entityType": "tables",
       "schema": "public"
     },
@@ -505,6 +529,349 @@
       "entityType": "columns",
       "schema": "public",
       "table": "source_cursors"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": {
+        "type": "always",
+        "name": "escalation_attempts_id_seq",
+        "increment": "1",
+        "startWith": "1",
+        "minValue": "1",
+        "maxValue": "9223372036854775807",
+        "cache": 1,
+        "cycle": false
+      },
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "escalation_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "attempt_number",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "outcome",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sms_sid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "detail",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "occurred_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": {
+        "type": "always",
+        "name": "escalations_id_seq",
+        "increment": "1",
+        "startWith": "1",
+        "minValue": "1",
+        "maxValue": "9223372036854775807",
+        "cache": 1,
+        "cycle": false
+      },
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "queue_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "source_message_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "receive_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "available_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "locked_until",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "lease_token",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "attempt_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sent_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sms_sid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "dismissed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "escalations"
     },
     {
       "type": "bigint",
@@ -1797,6 +2164,249 @@
       "table": "targets"
     },
     {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "added_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": {
+        "type": "always",
+        "name": "threads_id_seq",
+        "increment": "1",
+        "startWith": "1",
+        "minValue": "1",
+        "maxValue": "9223372036854775807",
+        "cache": 1,
+        "cycle": false
+      },
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "domain",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "priority",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "channel",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "title",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "brief",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decided_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "decision_reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'open'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "first_event_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_event_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "acked_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": true,
@@ -2088,6 +2698,19 @@
       "table": "stream_messages"
     },
     {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "stream_messages"
+    },
+    {
       "type": "jsonb",
       "typeSchema": null,
       "notNull": true,
@@ -2214,6 +2837,19 @@
       "table": "triage_items"
     },
     {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "thread_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": true,
@@ -2235,6 +2871,58 @@
       "generated": null,
       "identity": null,
       "name": "priority",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'web'",
+      "generated": null,
+      "identity": null,
+      "name": "channel",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "''",
+      "generated": null,
+      "identity": null,
+      "name": "brief",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'rule-stub'",
+      "generated": null,
+      "identity": null,
+      "name": "decided_by",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'legacy'",
+      "generated": null,
+      "identity": null,
+      "name": "decision_reason",
       "entityType": "columns",
       "schema": "public",
       "table": "triage_items"
@@ -2456,6 +3144,97 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "outbox"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "escalation_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "occurred_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "escalation_attempts_escalation_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "outcome",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "occurred_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "escalation_attempts_outcome_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "available_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "escalations_claim_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "escalations"
     },
     {
       "nameExplicit": true,
@@ -2732,6 +3511,13 @@
           "asc": true,
           "nullsFirst": false,
           "opclass": null
+        },
+        {
+          "value": "id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
         }
       ],
       "isUnique": false,
@@ -2848,6 +3634,90 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "targets"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "thread_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "added_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "thread_messages_thread_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "last_event_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "threads_status_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "domain",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "last_event_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "threads_domain_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "threads"
     },
     {
       "nameExplicit": true,
@@ -2972,6 +3842,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "thread_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "triage_items_thread_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "consumer_instance_id",
           "isExpression": false,
           "asc": true,
@@ -3046,6 +3944,57 @@
       "entityType": "fks",
       "schema": "public",
       "table": "outbox"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "escalation_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "escalations",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "escalation_attempts_escalation_id_escalations_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "event_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "events",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "escalations_event_id_events_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "queue_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "queues",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "escalations_queue_id_queues_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "escalations"
     },
     {
       "nameExplicit": false,
@@ -3345,6 +4294,40 @@
     {
       "nameExplicit": false,
       "columns": [
+        "thread_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "thread_messages_thread_id_threads_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "event_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "events",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "thread_messages_event_id_events_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "event_id"
       ],
       "schemaTo": "public",
@@ -3447,6 +4430,23 @@
     {
       "nameExplicit": false,
       "columns": [
+        "thread_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "stream_messages_thread_id_threads_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "stream_messages"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
         "queue_id"
       ],
       "schemaTo": "public",
@@ -3474,6 +4474,23 @@
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "triage_items_event_id_events_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "thread_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "threads",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "triage_items_thread_id_threads_id_fkey",
       "entityType": "fks",
       "schema": "public",
       "table": "triage_items"
@@ -3525,6 +4542,17 @@
     },
     {
       "columns": [
+        "thread_id",
+        "event_id"
+      ],
+      "nameExplicit": false,
+      "name": "thread_messages_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "columns": [
         "consumer_name",
         "event_id"
       ],
@@ -3552,6 +4580,26 @@
       "name": "outbox_pkey",
       "schema": "public",
       "table": "outbox",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "escalation_attempts_pkey",
+      "schema": "public",
+      "table": "escalation_attempts",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "escalations_pkey",
+      "schema": "public",
+      "table": "escalations",
       "entityType": "pks"
     },
     {
@@ -3649,6 +4697,16 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "threads_pkey",
+      "schema": "public",
+      "table": "threads",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "message_attempts_pkey",
       "schema": "public",
       "table": "message_attempts",
@@ -3689,6 +4747,17 @@
     {
       "nameExplicit": true,
       "columns": [
+        "source_message_id"
+      ],
+      "nullsNotDistinct": false,
+      "name": "escalations_source_message_key",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
         "queue_id",
         "event_id",
         "route_id"
@@ -3698,6 +4767,28 @@
       "entityType": "uniques",
       "schema": "public",
       "table": "queue_messages"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "event_id"
+      ],
+      "nullsNotDistinct": false,
+      "name": "thread_messages_event_key",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "thread_messages"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        "thread_key"
+      ],
+      "nullsNotDistinct": false,
+      "name": "threads_thread_key_key",
+      "entityType": "uniques",
+      "schema": "public",
+      "table": "threads"
     },
     {
       "nameExplicit": true,
@@ -3727,6 +4818,34 @@
       "entityType": "checks",
       "schema": "public",
       "table": "outbox"
+    },
+    {
+      "value": "\"outcome\" in ('send_reserved', 'sent', 'retry_scheduled', 'failed', 'rate_limited')",
+      "name": "escalation_attempts_outcome_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "escalation_attempts"
+    },
+    {
+      "value": "\"status\" in ('pending', 'sending', 'sent', 'failed', 'dismissed')",
+      "name": "escalations_status_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "value": "\"receive_count\" > 0",
+      "name": "escalations_receive_count_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "escalations"
+    },
+    {
+      "value": "\"attempt_count\" >= 0",
+      "name": "escalations_attempt_count_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "escalations"
     },
     {
       "value": "\"priority\" in ('urgent', 'normal', 'low')",
@@ -3820,7 +4939,28 @@
       "table": "targets"
     },
     {
-      "value": "\"outcome\" in ('received', 'acked', 'released', 'visibility_extended', 'snoozed')",
+      "value": "\"priority\" in ('urgent', 'normal', 'low')",
+      "name": "threads_priority_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "value": "\"channel\" in ('web', 'digest', 'telegram', 'sms')",
+      "name": "threads_channel_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "value": "\"status\" in ('open', 'snoozed', 'acked')",
+      "name": "threads_status_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "threads"
+    },
+    {
+      "value": "\"outcome\" in ('received', 'acked', 'nacked', 'released', 'visibility_extended', 'snoozed', 'escalated')",
       "name": "message_attempts_outcome_check",
       "entityType": "checks",
       "schema": "public",
@@ -3829,6 +4969,13 @@
     {
       "value": "\"priority\" in ('urgent', 'normal', 'low')",
       "name": "triage_items_priority_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "triage_items"
+    },
+    {
+      "value": "\"channel\" in ('web', 'digest', 'telegram', 'sms')",
+      "name": "triage_items_channel_check",
       "entityType": "checks",
       "schema": "public",
       "table": "triage_items"

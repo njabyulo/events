@@ -89,6 +89,11 @@ export class StreamsRepo {
   ): StreamMessageRecord {
     const event = events.get(String(stream.event_id));
     if (!event) throw new Error(`Stream message ${stream.id} has no event`);
+    const { detail: _detail, attributes: _attributes, links: _links, ...eventSummary } = event;
+    const triageItem = triage ? toTriageItem(triage, event) : null;
+    const compactTriageItem = triageItem
+      ? (({ event: _event, ...item }) => item)(triageItem)
+      : null;
     return {
       id: String(stream.id),
       streamKey: stream.stream_key,
@@ -96,10 +101,10 @@ export class StreamsRepo {
       eventId: String(stream.event_id),
       routeId: stream.route_id === null ? null : String(stream.route_id),
       threadId: stream.thread_id === null ? null : String(stream.thread_id),
-      triageItem: triage ? toTriageItem(triage, event) : null,
+      triageItem: compactTriageItem,
       data: stream.data,
       createdAt: stream.created_at.toISOString(),
-      event,
+      event: eventSummary,
     };
   }
 }

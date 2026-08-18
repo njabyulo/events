@@ -9,6 +9,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { db, type Database } from "../../client.js";
+import { escalationsTable } from "../../schemas/escalations.schema.js";
 import { eventLinksTable, eventsTable } from "../../schemas/events.schema.js";
 import {
   queueMessagesTable,
@@ -30,6 +31,7 @@ type QueueRow = typeof queuesTable.$inferSelect;
 type QueueMessageRow = typeof queueMessagesTable.$inferSelect;
 type MessageAttemptRow = typeof messageAttemptsTable.$inferSelect;
 type DatabaseTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+const QUEUE_MAINTENANCE_BATCH_SIZE = 100;
 
 export type CreateQueueInput = {
   name: string;
@@ -283,24 +285,106 @@ export class QueuesRepo {
       const visibility = input.visibilityTimeoutSeconds
         ?? queue.visibility_timeout_seconds;
 
-      const result = await transaction.execute(sql`
-        with candidates as (
-          select id
-          from queue_messages
-          where queue_id = ${queueId}
-            and visible_at <= now()
-          order by visible_at, id
-          for update skip locked
-          limit ${input.maxMessages}
-        )
-        update queue_messages as message
-        set visible_at = now() + (${visibility} * interval '1 second'),
-            receipt_handle = gen_random_uuid(),
-            receive_count = receive_count + 1
-        from candidates
-        where message.id = candidates.id
-        returning message.*
-      `);
+      if (queue.escalate) {
+        const exhaustedResult = await transaction.execute(sql`
+          delete from queue_messages as message
+          where message.id in (
+            select candidate.id
+            from queue_messages as candidate
+            where candidate.queue_id = ${queueId}
+              and candidate.priority = 'urgent'
+              and candidate.receive_count >= ${queue.max_receive_count}
+              and candidate.visible_at <= now()
+            order by candidate.id
+            for update skip locked
+            limit ${QUEUE_MAINTENANCE_BATCH_SIZE}
+          )
+          returning message.*
+        `);
+        const exhausted = exhaustedResult.rows.map((row) => claimedMessage(row));
+        if (exhausted.length > 0) {
+          await transaction.insert(escalationsTable).values(exhausted.map((message) => ({
+            event_id: message.event_id,
+            queue_id: message.queue_id,
+            source_message_id: message.id,
+            reason: `urgent message exhausted after ${message.receive_count} receives`,
+            receive_count: message.receive_count,
+          }))).onConflictDoNothing({ target: escalationsTable.source_message_id });
+          await transaction.insert(messageAttemptsTable).values(exhausted.map((message) => ({
+            message_id: message.id,
+            queue_id: message.queue_id,
+            event_id: message.event_id,
+            consumer_name: input.consumerName,
+            receipt_handle: message.receipt_handle,
+            receive_count: message.receive_count,
+            outcome: "escalated",
+            detail: { reason: "visibility expired after final receive" },
+          })));
+        }
+      }
+
+      const result = queue.fifo
+        ? await transaction.execute(sql`
+          with candidates as (
+            select message.id
+            from queue_messages as message
+            where message.queue_id = ${queueId}
+              and message.visible_at <= now()
+              and not (
+                ${queue.escalate}
+                and message.priority = 'urgent'
+                and message.receive_count >= ${queue.max_receive_count}
+              )
+              and not exists (
+                select 1
+                from queue_messages as older
+                where older.queue_id = message.queue_id
+                  and older.message_group_id = message.message_group_id
+                  and older.id < message.id
+              )
+              and not exists (
+                select 1
+                from queue_messages as active
+                where active.queue_id = message.queue_id
+                  and active.message_group_id = message.message_group_id
+                  and active.receipt_handle is not null
+                  and active.visible_at > now()
+              )
+            order by message.id
+            for update of message skip locked
+            limit ${input.maxMessages}
+          )
+          update queue_messages as message
+          set visible_at = now() + (${visibility} * interval '1 second'),
+              receipt_handle = gen_random_uuid(),
+              receive_count = receive_count + 1
+          from candidates
+          where message.id = candidates.id
+          returning message.*
+        `)
+        : await transaction.execute(sql`
+          with candidates as (
+            select id
+            from queue_messages
+            where queue_id = ${queueId}
+              and visible_at <= now()
+              and not (
+                ${queue.escalate}
+                and priority = 'urgent'
+                and receive_count >= ${queue.max_receive_count}
+              )
+            order by visible_at, id
+            for update skip locked
+            limit ${input.maxMessages}
+          )
+          update queue_messages as message
+          set visible_at = now() + (${visibility} * interval '1 second'),
+              receipt_handle = gen_random_uuid(),
+              receive_count = receive_count + 1
+          from candidates
+          where message.id = candidates.id
+          returning message.*
+        `);
       const claimed = result.rows.map((row) => claimedMessage(row));
       if (claimed.length === 0) return [];
 
@@ -378,15 +462,73 @@ export class QueuesRepo {
   }
 
   async nackMessage(input: NackMessageInput): Promise<boolean> {
-    return this.reschedule(
+    return this.withActiveLease(
       input.queueId,
       input.messageId,
       input.receiptHandle,
-      input.consumerName,
-      input.delaySeconds,
-      "nacked",
-      { error: input.error, delaySeconds: input.delaySeconds },
-      input.error,
+      async (transaction, queueId, messageId) => {
+        const [lease] = await transaction.select({
+          message: queueMessagesTable,
+          queue: queuesTable,
+        }).from(queueMessagesTable)
+          .innerJoin(queuesTable, eq(queuesTable.id, queueMessagesTable.queue_id))
+          .where(and(
+            eq(queueMessagesTable.id, messageId),
+            eq(queueMessagesTable.queue_id, queueId),
+            eq(queueMessagesTable.receipt_handle, input.receiptHandle),
+            gt(queueMessagesTable.visible_at, sql`now()`),
+          ))
+          .for("update")
+          .limit(1);
+        if (!lease) return false;
+
+        const exhausted = lease.queue.escalate
+          && lease.message.priority === "urgent"
+          && lease.message.receive_count >= lease.queue.max_receive_count;
+        if (exhausted) {
+          const reason = `urgent message exhausted after ${lease.message.receive_count} receives`;
+          await transaction.insert(escalationsTable).values({
+            event_id: lease.message.event_id,
+            queue_id: lease.message.queue_id,
+            source_message_id: lease.message.id,
+            reason,
+            receive_count: lease.message.receive_count,
+          }).onConflictDoNothing({ target: escalationsTable.source_message_id });
+          const [deleted] = await transaction.delete(queueMessagesTable).where(and(
+            eq(queueMessagesTable.id, messageId),
+            eq(queueMessagesTable.receipt_handle, input.receiptHandle),
+          )).returning();
+          if (!deleted) return false;
+          await this.recordAttempt(
+            transaction,
+            deleted,
+            input.consumerName,
+            input.receiptHandle,
+            "escalated",
+            { error: input.error, reason },
+          );
+          return true;
+        }
+
+        const [updated] = await transaction.update(queueMessagesTable).set({
+          visible_at: sql`now() + (${input.delaySeconds} * interval '1 second')`,
+          receipt_handle: null,
+          last_error: input.error,
+        }).where(and(
+          eq(queueMessagesTable.id, messageId),
+          eq(queueMessagesTable.receipt_handle, input.receiptHandle),
+        )).returning();
+        if (!updated) return false;
+        await this.recordAttempt(
+          transaction,
+          updated,
+          input.consumerName,
+          input.receiptHandle,
+          "nacked",
+          { error: input.error, delaySeconds: input.delaySeconds },
+        );
+        return true;
+      },
     );
   }
 

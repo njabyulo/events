@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "",
   "exports": {
+    "./escalations": {
+      "types": "./dist/escalations.d.mts",
+      "default": "./dist/escalations.mjs"
+    },
     "./events": {
       "types": "./dist/events.d.mts",
       "default": "./dist/events.mjs"
@@ -39,8 +43,9 @@
   "scripts": {
     "dev:db:generate": "drizzle-kit generate --config=drizzle-dev.config.ts",
     "dev:db:migrate": "drizzle-kit migrate --config=drizzle-dev.config.ts",
+    "dev:db:seed": "tsx seeds/index.ts",
     "test:integration": "vitest run tests/integration",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p seeds/tsconfig.json",
     "build": "pnpm typecheck && tsdown"
   },
   "keywords": [],
