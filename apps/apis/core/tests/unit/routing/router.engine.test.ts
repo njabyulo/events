@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { Client } from "pg";
 import { afterEach, expect, test, vi } from "vitest";
-import { RouterEngine } from "../../../src/modules/routing/router/router.engine.js";
+import { RouterEngine } from "../../../src/runtime/routing/router.engine.js";
 
 class FakeListener extends EventEmitter {
   constructor(private readonly order: string[]) {

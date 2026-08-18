@@ -1,16 +1,16 @@
 import { Hono } from "hono";
 import { requestId } from "hono/request-id";
 import { afterEach, expect, test } from "vitest";
-import type { AppEnvironment } from "../../../src/middleware/app.types.js";
+import type { AppEnvironment } from "../../../src/transport/http/middleware/app.types.js";
 import {
   apiErrorHandler,
   apiNotFoundHandler,
-} from "../../../src/middleware/error.handlers.js";
-import { hmacSha256 } from "../../../src/modules/events/webhooks/hmac.js";
+} from "../../../src/transport/http/middleware/error.handlers.js";
+import { hmacSha256 } from "../../../src/transport/http/webhooks/hmac.js";
 import {
   verifyWebhook,
   type WebhookEnvironment,
-} from "../../../src/modules/events/webhooks/webhook.middleware.js";
+} from "../../../src/transport/http/webhooks/webhook.middleware.js";
 
 const previousGithubSecret = process.env.GITHUB_WEBHOOK_SECRET;
 

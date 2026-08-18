@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
-import { genericHmacWebhookAdapter } from "../../../src/modules/events/webhooks/providers/generic-hmac.adapter.js";
-import { githubWebhookAdapter } from "../../../src/modules/events/webhooks/providers/github.adapter.js";
-import { hmacSha256 } from "../../../src/modules/events/webhooks/hmac.js";
+import { genericHmacWebhookAdapter } from "../../../src/transport/http/webhooks/providers/generic-hmac.adapter.js";
+import { githubWebhookAdapter } from "../../../src/transport/http/webhooks/providers/github.adapter.js";
+import { telegramWebhookAdapter } from "../../../src/transport/http/webhooks/providers/telegram.adapter.js";
+import { hmacSha256 } from "../../../src/transport/http/webhooks/hmac.js";
 
 const secret = "test-secret";
 
@@ -137,4 +138,30 @@ test("generic adapter rejects stale signed requests", async () => {
   await expect(
     genericHmacWebhookAdapter.verify(request(headers, body)),
   ).rejects.toMatchObject({ code: "stale_webhook" });
+});
+
+test("Telegram adapter verifies its secret header and normalizes callback actions", async () => {
+  const body = JSON.stringify({
+    update_id: 42,
+    callback_query: {
+      id: "callback-1",
+      data: "event.review:101",
+      from: { id: 7, username: "njabulo" },
+      message: { message_id: 9, date: 1_787_000_000, chat: { id: 123 } },
+    },
+  });
+  const input = request(new Headers({
+    "x-telegram-bot-api-secret-token": secret,
+  }), body);
+
+  await telegramWebhookAdapter.verify(input);
+  const event = await telegramWebhookAdapter.normalize(input);
+
+  expect(event).toMatchObject({
+    sourceEventId: "42",
+    type: "telegram.action",
+    actor: "njabulo",
+    correlationId: "123",
+    attributes: { action: "event.review:101" },
+  });
 });

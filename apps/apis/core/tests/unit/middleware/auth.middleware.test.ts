@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { afterEach, describe, expect, test } from "vitest";
-import { requireApiToken } from "../../../src/middleware/auth.middleware.js";
+import { requireApiToken } from "../../../src/transport/http/middleware/auth.middleware.js";
 
 const originalToken = process.env.API_AUTH_TOKEN;
 

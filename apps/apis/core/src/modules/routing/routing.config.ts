@@ -5,20 +5,7 @@ function positiveInteger(name: string, fallback: number, minimum = 1): number {
   return Number.isSafeInteger(value) && value >= minimum ? value : fallback;
 }
 
-function channel(name: string, fallback: string): string {
-  const value = process.env[name]?.trim() || fallback;
-  if (!/^[a-z_][a-z0-9_$]*$/i.test(value)) {
-    throw new Error(`${name} must be a valid PostgreSQL identifier`);
-  }
-  return value;
-}
-
 export const routerConfig = {
-  enabled: process.env.ROUTER_ENABLED?.toLowerCase() !== "false",
-  eventsChannel: channel("EVENTS_CHANNEL", "events_ready"),
-  sseChannel: channel("SSE_CHANNEL", "sse_ready"),
-  pollIntervalMs: positiveInteger("ROUTER_POLL_INTERVAL_MS", 5_000, 250),
-  reconnectDelayMs: positiveInteger("ROUTER_RECONNECT_DELAY_MS", 5_000, 250),
   leaseMs: positiveInteger("ROUTER_LEASE_MS", 30_000, 1_000),
   retryBaseMs: positiveInteger("ROUTER_RETRY_BASE_MS", 1_000, 1),
   retryMaxMs: positiveInteger("ROUTER_RETRY_MAX_MS", 60_000, 1),

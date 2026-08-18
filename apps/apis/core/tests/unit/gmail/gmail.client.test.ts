@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { GmailHistoryExpiredError } from "core/gmail";
-import { GoogleGmailClient } from "../../../src/modules/events/sources/gmail/gmail.client.js";
-import type { GmailConfig } from "../../../src/modules/events/sources/gmail/gmail.config.js";
+import { GoogleGmailClient } from "../../../src/integrations/gmail/gmail.client.js";
+import type { GmailConfig } from "../../../src/integrations/gmail/gmail.config.js";
 
 const config: GmailConfig = {
   clientId: "client-id",

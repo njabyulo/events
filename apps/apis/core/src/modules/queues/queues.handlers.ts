@@ -1,83 +1,65 @@
-import type { Context } from "hono";
-import { jsonObject, pathParam } from "../routing/routing.http.js";
-import { queuesService } from "./queues.dependencies.js";
-import { digestService } from "../digests/digest.dependencies.js";
+import type { DigestService } from "core/digests";
+import type { QueuesService } from "core/queues";
 
-export const listQueuesHandler = async (c: Context) => c.json({
-  data: await queuesService.listQueues(),
-});
+type QueuesPort = Pick<QueuesService,
+  | "listQueues"
+  | "getQueue"
+  | "createQueue"
+  | "updateQueue"
+  | "deleteQueue"
+  | "sendMessage"
+  | "receiveMessages"
+  | "ackMessage"
+  | "nackMessage"
+  | "snoozeMessage"
+  | "extendMessageVisibility"
+  | "listAttempts"
+  | "getStats"
+>;
+type DigestPort = Pick<DigestService, "flushQueue">;
 
-export const getQueueHandler = async (c: Context) => c.json({
-  data: await queuesService.getQueue(pathParam(c, "id")),
-});
+export class QueuesHandlers {
+  constructor(
+    private readonly queues: QueuesPort,
+    private readonly digests: DigestPort,
+  ) {}
 
-export const createQueueHandler = async (c: Context) => c.json({
-  data: await queuesService.createQueue(await jsonObject(c)),
-}, 201);
+  list() { return this.queues.listQueues(); }
+  get(id: string) { return this.queues.getQueue(id); }
+  create(command: Record<string, unknown>) { return this.queues.createQueue(command); }
+  update(id: string, command: Record<string, unknown>) {
+    return this.queues.updateQueue(id, command);
+  }
+  delete(id: string) { return this.queues.deleteQueue(id); }
+  send(queueId: string, command: Record<string, unknown>) {
+    return this.queues.sendMessage(queueId, command);
+  }
+  receive(queueId: string, command: Record<string, unknown>) {
+    return this.queues.receiveMessages(queueId, command);
+  }
+  ack(queueId: string, messageId: string, command: Record<string, unknown>) {
+    return this.queues.ackMessage(
+      queueId,
+      messageId,
+      command.receiptHandle,
+      command.consumerName,
+    );
+  }
+  nack(queueId: string, messageId: string, command: Record<string, unknown>) {
+    return this.queues.nackMessage(queueId, messageId, command);
+  }
+  snooze(queueId: string, messageId: string, command: Record<string, unknown>) {
+    return this.queues.snoozeMessage(queueId, messageId, command);
+  }
+  extendVisibility(queueId: string, messageId: string, command: Record<string, unknown>) {
+    return this.queues.extendMessageVisibility(queueId, messageId, command);
+  }
+  listAttempts(messageId: string) { return this.queues.listAttempts(messageId); }
+  stats(queueId: string) { return this.queues.getStats(queueId); }
+  flushDigest(queueId: string) { return this.digests.flushQueue(queueId); }
+}
 
-export const updateQueueHandler = async (c: Context) => c.json({
-  data: await queuesService.updateQueue(pathParam(c, "id"), await jsonObject(c)),
-});
-
-export const deleteQueueHandler = async (c: Context) => {
-  await queuesService.deleteQueue(pathParam(c, "id"));
-  return c.body(null, 204);
-};
-
-export const sendMessageHandler = async (c: Context) => c.json({
-  data: await queuesService.sendMessage(pathParam(c, "id"), await jsonObject(c)),
-}, 201);
-
-export const receiveMessagesHandler = async (c: Context) => c.json({
-  data: await queuesService.receiveMessages(pathParam(c, "id"), await jsonObject(c)),
-});
-
-export const ackMessageHandler = async (c: Context) => {
-  const body = await jsonObject(c);
-  await queuesService.ackMessage(
-    pathParam(c, "id"),
-    pathParam(c, "messageId"),
-    body.receiptHandle,
-    body.consumerName,
-  );
-  return c.body(null, 204);
-};
-
-export const nackMessageHandler = async (c: Context) => {
-  await queuesService.nackMessage(
-    pathParam(c, "id"),
-    pathParam(c, "messageId"),
-    await jsonObject(c),
-  );
-  return c.body(null, 204);
-};
-
-export const snoozeMessageHandler = async (c: Context) => {
-  await queuesService.snoozeMessage(
-    pathParam(c, "id"),
-    pathParam(c, "messageId"),
-    await jsonObject(c),
-  );
-  return c.body(null, 204);
-};
-
-export const extendVisibilityHandler = async (c: Context) => {
-  await queuesService.extendMessageVisibility(
-    pathParam(c, "id"),
-    pathParam(c, "messageId"),
-    await jsonObject(c),
-  );
-  return c.body(null, 204);
-};
-
-export const listAttemptsHandler = async (c: Context) => c.json({
-  data: await queuesService.listAttempts(pathParam(c, "messageId")),
-});
-
-export const getQueueStatsHandler = async (c: Context) => c.json({
-  data: await queuesService.getStats(pathParam(c, "id")),
-});
-
-export const flushDigestHandler = async (c: Context) => c.json({
-  data: await digestService.flushQueue(pathParam(c, "id")),
-});
+export const createQueuesHandlers = (
+  queues: QueuesPort,
+  digests: DigestPort,
+): QueuesHandlers => new QueuesHandlers(queues, digests);

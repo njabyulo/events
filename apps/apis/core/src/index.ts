@@ -1,24 +1,36 @@
 import 'dotenv/config'
 import { serve } from '@hono/node-server'
 import { closeDatabase } from 'database/runtime'
-import { app } from './routing/index.js'
-import { startGmailPollScheduler } from './modules/events/sources/gmail/gmail.scheduler.js'
+import { app } from './transport/http/index.js'
+import { startGmailPollScheduler } from './runtime/gmail/gmail.scheduler.js'
 import {
   sseNotificationEngine,
   startSseNotificationEngine,
-} from './modules/events/sse/sse.handler.js'
+} from './transport/sse/sse.transport.js'
 import {
   routingEngine,
   startRoutingEngine,
-} from './modules/routing/router/router.engine.js'
+} from './runtime/routing/router.engine.js'
 import {
   dashboardConsumerEngine,
   startDashboardConsumerEngine,
-} from './modules/triage/dashboard.consumer.js'
+} from './runtime/triage/dashboard.consumer.js'
 import {
   digestScheduler,
   startDigestScheduler,
-} from './modules/digests/digest.scheduler.js'
+} from './runtime/digests/digest.scheduler.js'
+import {
+  agentConsumerEngine,
+  startAgentConsumerEngine,
+} from './runtime/agents/agent.consumer.js'
+import {
+  telegramConsumerEngine,
+  startTelegramConsumerEngine,
+} from './runtime/telegram/telegram.consumer.js'
+import {
+  escalationsScheduler,
+  startEscalationsScheduler,
+} from './runtime/escalations/escalations.scheduler.js'
 
 let stopGmailPolling: (() => void) | undefined
 
@@ -31,6 +43,9 @@ const server = serve({
   startSseNotificationEngine()
   startDashboardConsumerEngine()
   startDigestScheduler()
+  startAgentConsumerEngine()
+  startTelegramConsumerEngine()
+  startEscalationsScheduler()
   stopGmailPolling = startGmailPollScheduler()
 })
 
@@ -41,7 +56,10 @@ async function shutdown(signal: string) {
   console.log(`Received ${signal}; draining consumers`)
   stopGmailPolling?.()
   digestScheduler.stop()
+  escalationsScheduler.stop()
   await Promise.allSettled([
+    agentConsumerEngine.stop(),
+    telegramConsumerEngine.stop(),
     dashboardConsumerEngine.stop(),
     routingEngine.stop(),
     sseNotificationEngine.stop(),
