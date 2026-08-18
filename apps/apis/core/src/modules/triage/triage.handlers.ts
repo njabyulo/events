@@ -3,7 +3,10 @@ import type { StreamsService, ThreadsService, TriageService } from "core/triage"
 
 type TriagePort = Pick<TriageService, "listItems">;
 type ThreadsPort = Pick<ThreadsService, "listThreads" | "getThread" | "ack" | "snooze">;
-type StreamsPort = Pick<StreamsService, "getHighWaterMark" | "listMessages">;
+type StreamsPort = Pick<
+  StreamsService,
+  "getHighWaterMark" | "getMessageStreamKey" | "listMessages"
+>;
 type AgentRepliesPort = Pick<AgentService, "publishUserReply">;
 
 export class TriageHandlers {
@@ -12,8 +15,8 @@ export class TriageHandlers {
     private readonly defaultStreamKey: string,
   ) {}
 
-  listItems(streamKey?: string) {
-    return this.triage.listItems(streamKey || this.defaultStreamKey);
+  listItems(streamKey?: string, afterId?: string, limit?: string) {
+    return this.triage.listItems(streamKey || this.defaultStreamKey, afterId, limit);
   }
 }
 
@@ -24,7 +27,19 @@ export class ThreadsHandlers {
     private readonly defaultStreamKey: string,
   ) {}
 
-  list(streamKey?: string) { return this.threads.listThreads(streamKey || this.defaultStreamKey); }
+  list(query: {
+    streamKey?: string;
+    limit?: string;
+    beforeLastEventAt?: string;
+    beforeId?: string;
+  } = {}) {
+    return this.threads.listThreads(
+      query.streamKey || this.defaultStreamKey,
+      query.limit,
+      query.beforeLastEventAt,
+      query.beforeId,
+    );
+  }
 
   get(id: string) { return this.threads.getThread(id); }
 
@@ -49,6 +64,10 @@ export class StreamsHandlers {
 
   getHighWaterMark(streamKey?: string) {
     return this.streams.getHighWaterMark(streamKey || this.defaultStreamKey);
+  }
+
+  getMessageStreamKey(messageId: string) {
+    return this.streams.getMessageStreamKey(messageId);
   }
 
   listMessages(

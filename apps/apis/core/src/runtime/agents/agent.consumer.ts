@@ -7,6 +7,7 @@ import { triageConfig } from "../../modules/triage/triage.config.js";
 import { triageService } from "../../modules/triage/triage.module.js";
 import { agentService } from "../../modules/agents/agent.module.js";
 import { agentRuntimeConfig } from "./agent.config.js";
+import { Env } from "../../config/env.js";
 
 async function createWorker(): Promise<ConsumerWorker> {
   const queue = await queuesService.getQueueByName(agentRuntimeConfig.queueName);
@@ -71,7 +72,7 @@ export const agentConsumerEngine = new QueueConsumerEngine({
   name: "Agent consumer",
   createListener: databaseListener,
   createWorker,
-  queueChannel: process.env.QUEUE_CHANNEL?.trim() || "queue_ready",
+  queueChannel: Env.channel("QUEUE_CHANNEL", "queue_ready"),
   reconnectDelayMs: agentRuntimeConfig.reconnectDelayMs,
   shutdownDeadlineMs: agentRuntimeConfig.shutdownDeadlineMs,
 });

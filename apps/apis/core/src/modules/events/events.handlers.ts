@@ -10,8 +10,8 @@ export class EventsHandlers {
     private readonly router: EventRoutingPort,
   ) {}
 
-  list() {
-    return this.events.getEvents();
+  list(query: { limit?: string; beforeOccurredAt?: string; beforeId?: string } = {}) {
+    return this.events.getEvents(query.limit, query.beforeOccurredAt, query.beforeId);
   }
 
   get(id: string) {

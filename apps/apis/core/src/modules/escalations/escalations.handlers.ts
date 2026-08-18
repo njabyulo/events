@@ -7,7 +7,7 @@ type EscalationsPort = Pick<EscalationsService,
 export class EscalationsHandlers {
   constructor(private readonly escalations: EscalationsPort) {}
 
-  list() { return this.escalations.list(); }
+  list(limit?: string, beforeId?: string) { return this.escalations.list(limit, beforeId); }
   listAttempts(id: string) { return this.escalations.listAttempts(id); }
   dismiss(id: string, command: Record<string, unknown>) {
     return this.escalations.dismiss(id, command.actor, command.reason);

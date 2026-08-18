@@ -7,7 +7,7 @@ export const escalationsRouter = new Hono();
 
 escalationsRouter.use("*", requireApiToken);
 escalationsRouter.get("/", async (c) => c.json({
-  data: await escalationsHandlers.list(),
+  data: await escalationsHandlers.list(c.req.query("limit"), c.req.query("beforeId")),
 }));
 escalationsRouter.get("/:id/attempts", async (c) => c.json({
   data: await escalationsHandlers.listAttempts(pathParam(c, "id")),

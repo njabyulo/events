@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { app } from "../../../src/transport/http/index.js";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { app, createApp } from "../../../src/transport/http/index.js";
 
 const githubSecret = process.env.GITHUB_WEBHOOK_SECRET;
 
@@ -27,5 +27,19 @@ describe("HTTP route composition", () => {
   test("does not retain the removed events SSE compatibility route", async () => {
     const response = await app.request("/events/sse");
     expect(response.status).toBe(404);
+  });
+
+  test("separates process liveness from database and schema readiness", async () => {
+    const readiness = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("schema is missing"));
+    const testApp = createApp({ readiness });
+
+    expect((await testApp.request("/health/live")).status).toBe(200);
+    await expect((await testApp.request("/health/ready")).json())
+      .resolves.toEqual({ status: "ready" });
+    const unavailable = await testApp.request("/health/ready");
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toEqual({ status: "not_ready" });
   });
 });

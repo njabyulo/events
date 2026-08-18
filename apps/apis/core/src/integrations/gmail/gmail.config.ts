@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { Env } from "../../config/env.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 120_000;
 
@@ -35,7 +36,7 @@ function requiredEnvironmentValue(name: string): string {
 }
 
 export function isGmailPollingEnabled(): boolean {
-  if (process.env.GMAIL_POLL_ENABLED?.toLowerCase() === "false") return false;
+  if (!Env.boolean("GMAIL_POLL_ENABLED", true)) return false;
   return [
     "GMAIL_CLIENT_ID",
     "GMAIL_CLIENT_SECRET",
@@ -45,17 +46,16 @@ export function isGmailPollingEnabled(): boolean {
 }
 
 export function loadGmailConfig(): GmailConfig {
-  const configuredInterval = Number(process.env.GMAIL_POLL_INTERVAL_MS);
-  const pollIntervalMs = Number.isSafeInteger(configuredInterval) && configuredInterval >= 10_000
-    ? configuredInterval
-    : DEFAULT_POLL_INTERVAL_MS;
-
   return {
     clientId: requiredEnvironmentValue("GMAIL_CLIENT_ID"),
     clientSecret: requiredEnvironmentValue("GMAIL_CLIENT_SECRET"),
     refreshToken: requiredEnvironmentValue("GMAIL_REFRESH_TOKEN"),
     labelId: requiredEnvironmentValue("GMAIL_LABEL_ID"),
     userId: process.env.GMAIL_USER_ID?.trim() || "me",
-    pollIntervalMs,
+    pollIntervalMs: Env.integer(
+      "GMAIL_POLL_INTERVAL_MS",
+      DEFAULT_POLL_INTERVAL_MS,
+      { minimum: 10_000 },
+    ),
   };
 }

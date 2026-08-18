@@ -11,6 +11,12 @@ export type SseFrame = {
 };
 
 export class SseUtils {
+  static cursor(value: string | undefined): string {
+    if (!value || !/^\d{1,19}$/.test(value)) return "0";
+    const id = BigInt(value);
+    return id <= 9_223_372_036_854_775_807n ? String(id) : "0";
+  }
+
   static frame<TMessage extends SseMessage>(message: TMessage, maximumBytes: number): SseFrame {
     const data = JSON.stringify(message);
     if (Buffer.byteLength(data) <= maximumBytes) {

@@ -2,7 +2,11 @@ import 'dotenv/config'
 import { serve } from '@hono/node-server'
 import { closeDatabase } from 'database/runtime'
 import { app } from './transport/http/index.js'
-import { startGmailPollScheduler } from './runtime/gmail/gmail.scheduler.js'
+import { runtimeConfig } from './runtime/runtime.config.js'
+import {
+  gmailPollScheduler,
+  startGmailPollScheduler,
+} from './runtime/gmail/gmail.scheduler.js'
 import {
   sseNotificationEngine,
   startSseNotificationEngine,
@@ -11,6 +15,10 @@ import {
   routingEngine,
   startRoutingEngine,
 } from './runtime/routing/router.engine.js'
+import {
+  replayEngine,
+  startReplayEngine,
+} from './runtime/routing/replay.engine.js'
 import {
   dashboardConsumerEngine,
   startDashboardConsumerEngine,
@@ -31,22 +39,26 @@ import {
   escalationsScheduler,
   startEscalationsScheduler,
 } from './runtime/escalations/escalations.scheduler.js'
-
-let stopGmailPolling: (() => void) | undefined
+import {
+  maintenanceScheduler,
+  startMaintenanceScheduler,
+} from './runtime/maintenance/maintenance.scheduler.js'
 
 const server = serve({
   fetch: app.fetch,
-  port: 3000
+  port: runtimeConfig.port
 }, (info) => {
   console.log(`Server is running on http://localhost:${info.port}`)
   startRoutingEngine()
+  startReplayEngine()
   startSseNotificationEngine()
   startDashboardConsumerEngine()
   startDigestScheduler()
   startAgentConsumerEngine()
   startTelegramConsumerEngine()
   startEscalationsScheduler()
-  stopGmailPolling = startGmailPollScheduler()
+  startMaintenanceScheduler()
+  startGmailPollScheduler()
 })
 
 let shuttingDown = false
@@ -54,17 +66,20 @@ async function shutdown(signal: string) {
   if (shuttingDown) return
   shuttingDown = true
   console.log(`Received ${signal}; draining consumers`)
-  stopGmailPolling?.()
-  digestScheduler.stop()
-  escalationsScheduler.stop()
+  const serverClosed = new Promise<void>((resolve) => server.close(() => resolve()))
   await Promise.allSettled([
+    gmailPollScheduler.stop(),
+    digestScheduler.stop(),
+    escalationsScheduler.stop(),
+    maintenanceScheduler.stop(),
     agentConsumerEngine.stop(),
     telegramConsumerEngine.stop(),
     dashboardConsumerEngine.stop(),
+    replayEngine.stop(),
     routingEngine.stop(),
     sseNotificationEngine.stop(),
   ])
-  await new Promise<void>((resolve) => server.close(() => resolve()))
+  await serverClosed
   await closeDatabase()
 }
 

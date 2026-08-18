@@ -19,6 +19,7 @@ export const routerService = createRouterService({
   leaseMs: routerConfig.leaseMs,
   retryBaseMs: routerConfig.retryBaseMs,
   retryMaxMs: routerConfig.retryMaxMs,
+  maxAttempts: routerConfig.maxAttempts,
   schedule: {
     timeZone: routerConfig.timeZone,
     quietHoursStart: routerConfig.quietHoursStart,
@@ -36,6 +37,10 @@ export const targetsService = createTargetsService({
 export const replaysService = createReplaysService({
   routingRepository: routingRepo,
   routerService,
+  batchSize: routerConfig.replayBatchSize,
+  leaseSeconds: routerConfig.replayLeaseSeconds,
+  maxAttempts: routerConfig.replayMaxAttempts,
+  retryDelaySeconds: routerConfig.replayRetryDelaySeconds,
 });
 
 export const rulesHandlers = new RulesHandlers(rulesService);

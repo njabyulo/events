@@ -1,14 +1,12 @@
 import 'dotenv/config';
 import { hasWebhookAdapter } from "./webhook.adapters.js";
 import { asJsonObject, WebhookError } from "./webhook.types.js";
+import { Env } from "../../../config/env.js";
 
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 
 export function maxBodyBytes() {
-  const configured = Number(process.env.WEBHOOK_MAX_BODY_BYTES);
-  return Number.isSafeInteger(configured) && configured > 0
-    ? configured
-    : DEFAULT_MAX_BODY_BYTES;
+  return Env.integer("WEBHOOK_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES);
 }
 
 export type WebhookSource = {

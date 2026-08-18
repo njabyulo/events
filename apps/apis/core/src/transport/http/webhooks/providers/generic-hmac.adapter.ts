@@ -2,6 +2,7 @@ import { hmacSha256, signaturesMatch } from "../hmac.js";
 import { requiredHeader } from "../webhook.helpers.js";
 import type { JsonObject, NormalizedWebhookEvent, WebhookAdapter, WebhookRequest } from "../webhook.types.js";
 import { asJsonObject, WebhookError } from "../webhook.types.js";
+import { Env } from "../../../../config/env.js";
 
 const DEFAULT_MAX_CLOCK_SKEW_SECONDS = 300;
 
@@ -42,8 +43,10 @@ export const genericHmacWebhookAdapter: WebhookAdapter = {
       throw new WebhookError(400, "invalid_timestamp", "Webhook timestamp must use Unix seconds");
     }
 
-    const maxClockSkew = Number(process.env.WEBHOOK_MAX_CLOCK_SKEW_SECONDS)
-      || DEFAULT_MAX_CLOCK_SKEW_SECONDS;
+    const maxClockSkew = Env.integer(
+      "WEBHOOK_MAX_CLOCK_SKEW_SECONDS",
+      DEFAULT_MAX_CLOCK_SKEW_SECONDS,
+    );
     const clockSkew = Math.abs(receivedAt.getTime() - timestampSeconds * 1000) / 1000;
     if (clockSkew > maxClockSkew) {
       throw new WebhookError(401, "stale_webhook", "Webhook timestamp is outside the allowed window");

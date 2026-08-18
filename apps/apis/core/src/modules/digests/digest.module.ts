@@ -8,4 +8,5 @@ export const digestService = createDigestService({
   publisher: eventsService,
   consumerName: digestConfig.consumerName,
   visibilityTimeoutSeconds: digestConfig.visibilityTimeoutSeconds,
+  batchSize: digestConfig.batchSize,
 });

@@ -7,7 +7,13 @@ import { maxEventBodyBytes } from "./events.config.js";
 
 export const eventsRouter = new Hono();
 
-eventsRouter.get("/", async (c) => c.json({ data: await eventsHandlers.list() }));
+eventsRouter.get("/", async (c) => c.json({
+  data: await eventsHandlers.list({
+    limit: c.req.query("limit"),
+    beforeOccurredAt: c.req.query("beforeOccurredAt"),
+    beforeId: c.req.query("beforeId"),
+  }),
+}));
 eventsRouter.post(
   "/",
   bodyLimit({

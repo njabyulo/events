@@ -2,6 +2,12 @@ import { describe, expect, test } from "vitest";
 import { SseUtils } from "../../../src/transport/sse/sse.utils.js";
 
 describe("SseUtils", () => {
+  test("accepts only PostgreSQL bigint cursors", () => {
+    expect(SseUtils.cursor("9223372036854775807")).toBe("9223372036854775807");
+    expect(SseUtils.cursor("9223372036854775808")).toBe("0");
+    expect(SseUtils.cursor("not-an-id")).toBe("0");
+  });
+
   test("keeps a bounded stream message intact", () => {
     const message = { id: "12", eventName: "triage.item.available", summary: "Ready" };
 

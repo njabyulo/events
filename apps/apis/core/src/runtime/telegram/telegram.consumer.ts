@@ -4,6 +4,7 @@ import { QueueConsumerEngine, databaseListener } from "../consumers/queue-consum
 import { queuesService } from "../../modules/queues/queues.module.js";
 import { telegramClient } from "../../integrations/telegram/telegram.client.js";
 import { telegramConfig } from "../../integrations/telegram/telegram.config.js";
+import { Env } from "../../config/env.js";
 
 const telegramService = createTelegramService(telegramClient);
 
@@ -61,7 +62,7 @@ export const telegramConsumerEngine = new QueueConsumerEngine({
   name: "Telegram consumer",
   createListener: databaseListener,
   createWorker,
-  queueChannel: process.env.QUEUE_CHANNEL?.trim() || "queue_ready",
+  queueChannel: Env.channel("QUEUE_CHANNEL", "queue_ready"),
   reconnectDelayMs: telegramConfig.reconnectDelayMs,
   shutdownDeadlineMs: telegramConfig.shutdownDeadlineMs,
 });

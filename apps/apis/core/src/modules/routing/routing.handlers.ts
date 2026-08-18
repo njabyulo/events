@@ -93,7 +93,7 @@ export class TargetsHandlers {
 export class ReplaysHandlers {
   constructor(private readonly replays: ReplaysPort) {}
 
-  list() { return this.replays.listReplays(); }
+  list(limit?: string, beforeId?: string) { return this.replays.listReplays(limit, beforeId); }
   get(id: string) { return this.replays.getReplay(id); }
   create(command: Record<string, unknown>) {
     return this.replays.createReplay({

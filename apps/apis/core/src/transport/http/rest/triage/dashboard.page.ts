@@ -75,6 +75,8 @@ export const dashboardHtml = String.raw`<!doctype html>
     const status = document.querySelector('#status');
     const dot = document.querySelector('#dot');
     let stopped = false;
+    let refreshTimer;
+    let refreshPromise;
 
     function credentials() {
       return {
@@ -243,7 +245,14 @@ export const dashboardHtml = String.raw`<!doctype html>
 
     function applyStreamMessage(message) {
       if (!message.threadId && !message.triageItem && message.refresh !== true) return;
-      void Promise.all([loadThreads(), loadEscalations()]);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        if (refreshPromise) return;
+        refreshPromise = Promise.all([loadThreads(), loadEscalations()])
+          .catch((error) => setStatus(error.message))
+          .finally(() => { refreshPromise = undefined; });
+      }, 100);
     }
 
     async function connectStream() {

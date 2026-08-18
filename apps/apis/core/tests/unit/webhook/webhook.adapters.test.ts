@@ -94,6 +94,58 @@ test("GitHub adapter accepts form payloads and emits semantic merged events", as
   ]));
 });
 
+test("GitHub workflow runs expose deployment correlation fields", async () => {
+  const body = JSON.stringify({
+    action: "completed",
+    workflow_run: {
+      id: 987654321,
+      head_sha: "deploy-sha",
+      html_url: "https://github.com/njabulo/events/actions/runs/987654321",
+      updated_at: "2026-08-15T09:58:00Z",
+      pull_requests: [{ number: 73 }],
+    },
+    repository: { full_name: "njabulo/events" },
+    sender: { login: "github-actions" },
+  });
+  const rawBody = new TextEncoder().encode(body);
+  const headers = new Headers({
+    "content-type": "application/json",
+    "x-github-delivery": "workflow-delivery-1",
+    "x-github-event": "workflow_run",
+    "x-hub-signature-256": hmacSha256(secret, rawBody),
+  });
+  const input = request(headers, body);
+
+  const event = await githubWebhookAdapter.normalize(input);
+
+  expect(event.type).toBe("workflow_run.completed");
+  expect(event.attributes).toMatchObject({
+    repository: "njabulo/events",
+    commit_sha: "deploy-sha",
+    deployment_id: "987654321",
+    deployment_url: "https://github.com/njabulo/events/actions/runs/987654321",
+    pr_number: 73,
+  });
+  expect(event.links).toEqual(expect.arrayContaining([
+    { kind: "commit_sha", value: "deploy-sha" },
+    { kind: "deployment_id", value: "987654321" },
+    { kind: "pull_request", value: "njabulo/events#73" },
+  ]));
+});
+
+test("GitHub events without an action still use a dotted canonical type", async () => {
+  const body = JSON.stringify({
+    zen: "Keep it logically awesome.",
+    repository: { full_name: "njabulo/events" },
+  });
+  const event = await githubWebhookAdapter.normalize(request(new Headers({
+    "x-github-delivery": "ping-delivery-1",
+    "x-github-event": "ping",
+  }), body));
+
+  expect(event.type).toBe("ping.received");
+});
+
 test("generic adapter verifies timestamp plus raw body", async () => {
   const receivedAt = new Date("2026-08-15T10:00:00.000Z");
   const timestamp = String(Math.floor(receivedAt.getTime() / 1000));

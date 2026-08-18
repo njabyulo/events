@@ -4,17 +4,26 @@ import { escalationsService } from "../../modules/escalations/escalations.module
 export class EscalationsScheduler {
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
+  private activeRun?: Promise<void>;
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.run(), escalationsConfig.pollIntervalMs);
+    this.timer = setInterval(() => this.requestRun(), escalationsConfig.pollIntervalMs);
     this.timer.unref?.();
-    void this.run();
+    this.requestRun();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    await this.activeRun;
+  }
+
+  private requestRun(): void {
+    if (this.activeRun) return;
+    this.activeRun = this.run().finally(() => {
+      this.activeRun = undefined;
+    });
   }
 
   private async run(): Promise<void> {

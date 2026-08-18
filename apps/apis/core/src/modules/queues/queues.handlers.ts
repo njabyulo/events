@@ -14,6 +14,7 @@ type QueuesPort = Pick<QueuesService,
   | "snoozeMessage"
   | "extendMessageVisibility"
   | "listAttempts"
+  | "listDeadLetters"
   | "getStats"
 >;
 type DigestPort = Pick<DigestService, "flushQueue">;
@@ -55,6 +56,9 @@ export class QueuesHandlers {
     return this.queues.extendMessageVisibility(queueId, messageId, command);
   }
   listAttempts(messageId: string) { return this.queues.listAttempts(messageId); }
+  listDeadLetters(queueId: string, limit?: string, beforeId?: string) {
+    return this.queues.listDeadLetters(queueId, limit, beforeId);
+  }
   stats(queueId: string) { return this.queues.getStats(queueId); }
   flushDigest(queueId: string) { return this.digests.flushQueue(queueId); }
 }

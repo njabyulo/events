@@ -8,7 +8,7 @@ export type RouterEngineDependencies = {
   pollIntervalMs: number;
   reconnectDelayMs: number;
   drain: () => Promise<{
-    status: "idle" | "committed" | "lease_lost" | "failed";
+    status: "idle" | "committed" | "lease_lost" | "failed" | "dead";
     error?: Error;
   }[]>;
 };
@@ -20,6 +20,7 @@ export class RouterEngine {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private drainRunning = false;
   private drainRequested = false;
+  private activeDrain?: Promise<void>;
 
   constructor(private readonly dependencies: RouterEngineDependencies) {}
 
@@ -41,6 +42,7 @@ export class RouterEngine {
     const listener = this.listener;
     this.listener = undefined;
     if (listener) await listener.end().catch(() => undefined);
+    await this.activeDrain;
   }
 
   private async connect(): Promise<void> {
@@ -85,7 +87,12 @@ export class RouterEngine {
   private requestDrain(): void {
     if (!this.started) return;
     this.drainRequested = true;
-    if (!this.drainRunning) void this.drainLoop();
+    if (!this.drainRunning) {
+      this.activeDrain = this.drainLoop().finally(() => {
+        this.activeDrain = undefined;
+        if (this.started && this.drainRequested) this.requestDrain();
+      });
+    }
   }
 
   private async drainLoop(): Promise<void> {
@@ -95,7 +102,9 @@ export class RouterEngine {
         this.drainRequested = false;
         try {
           const results = await this.dependencies.drain();
-          const failure = results.find((result) => result.status === "failed");
+          const failure = results.find((result) => (
+            result.status === "failed" || result.status === "dead"
+          ));
           if (failure?.error) console.error("Router attempt failed", failure.error);
           if (
             results.length >= 1_000
@@ -109,7 +118,6 @@ export class RouterEngine {
       }
     } finally {
       this.drainRunning = false;
-      if (this.started && this.drainRequested) void this.drainLoop();
     }
   }
 }

@@ -51,6 +51,13 @@ queuesRouter.post("/:id/messages/:messageId/visibility", async (c) => {
 queuesRouter.get("/:id/messages/:messageId/attempts", async (c) => c.json({
   data: await queuesHandlers.listAttempts(pathParam(c, "messageId")),
 }));
+queuesRouter.get("/:id/dead-letters", async (c) => c.json({
+  data: await queuesHandlers.listDeadLetters(
+    pathParam(c, "id"),
+    c.req.query("limit"),
+    c.req.query("beforeId"),
+  ),
+}));
 queuesRouter.get("/:id/stats", async (c) => c.json({
   data: await queuesHandlers.stats(pathParam(c, "id")),
 }));

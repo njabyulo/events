@@ -7,11 +7,10 @@ import { sseConfig } from "./sse.config.js";
 import { SseUtils } from "./sse.utils.js";
 
 const STREAM_BATCH_SIZE = 100;
+type StreamMessage = Awaited<ReturnType<typeof streamsHandlers.listMessages>>[number];
 
 class DurableSseClient {
   private cursor: string;
-  private pumping = false;
-  private pumpRequested = false;
   private closed = false;
 
   constructor(
@@ -20,6 +19,14 @@ class DurableSseClient {
     private readonly stream: SSEStreamingApi,
   ) {
     this.cursor = cursor;
+  }
+
+  get cursorId(): string {
+    return this.cursor;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   async replayThrough(highWaterMark: string): Promise<void> {
@@ -36,47 +43,8 @@ class DurableSseClient {
     }
   }
 
-  wake(): void {
-    if (this.closed) return;
-    this.pumpRequested = true;
-    if (!this.pumping) void this.pump();
-  }
-
-  async close(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    await this.stream.close().catch(() => undefined);
-  }
-
-  private async pump(): Promise<void> {
-    this.pumping = true;
-    try {
-      while (!this.closed && this.pumpRequested) {
-        this.pumpRequested = false;
-        while (!this.closed) {
-          const messages = await streamsHandlers.listMessages(
-            this.streamKey,
-            this.cursor,
-            undefined,
-            STREAM_BATCH_SIZE,
-          );
-          if (messages.length === 0) break;
-          for (const message of messages) await this.send(message);
-          if (messages.length < STREAM_BATCH_SIZE) break;
-        }
-      }
-    } catch (error) {
-      console.error("SSE client delivery failed", { streamKey: this.streamKey, error });
-      await this.close();
-    } finally {
-      this.pumping = false;
-      if (!this.closed && this.pumpRequested) void this.pump();
-    }
-  }
-
-  private async send(
-    message: Awaited<ReturnType<typeof streamsHandlers.listMessages>>[number],
-  ) {
+  async send(message: StreamMessage): Promise<void> {
+    if (this.closed || BigInt(message.id) <= BigInt(this.cursor)) return;
     const frame = SseUtils.frame(message, sseConfig.maxFrameBytes);
     if (frame.skipped) {
       console.error("SSE frame replaced with a bounded skip marker", {
@@ -91,10 +59,111 @@ class DurableSseClient {
     });
     this.cursor = message.id;
   }
+
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.stream.close().catch(() => undefined);
+  }
 }
 
-const activeClients = new Set<DurableSseClient>();
+class StreamClientGroup {
+  readonly clients = new Set<DurableSseClient>();
+  private pumping = false;
+  private pumpRequested = false;
+
+  constructor(readonly streamKey: string) {}
+
+  add(client: DurableSseClient): void {
+    this.clients.add(client);
+  }
+
+  remove(client: DurableSseClient): void {
+    this.clients.delete(client);
+  }
+
+  wake(): void {
+    this.pumpRequested = true;
+    if (!this.pumping) void this.pump();
+  }
+
+  async close(): Promise<void> {
+    await Promise.all([...this.clients].map((client) => client.close()));
+    this.clients.clear();
+  }
+
+  private async pump(): Promise<void> {
+    this.pumping = true;
+    try {
+      while (this.pumpRequested && this.clients.size > 0) {
+        this.pumpRequested = false;
+        while (this.clients.size > 0) {
+          const active = [...this.clients].filter((client) => !client.isClosed);
+          if (active.length === 0) break;
+          const afterId = active.reduce((minimum, client) => (
+            BigInt(client.cursorId) < BigInt(minimum) ? client.cursorId : minimum
+          ), active[0]?.cursorId ?? "0");
+          const messages = await streamsHandlers.listMessages(
+            this.streamKey,
+            afterId,
+            undefined,
+            STREAM_BATCH_SIZE,
+          );
+          if (messages.length === 0) break;
+          for (const message of messages) {
+            const recipients = active.filter((client) => (
+              !client.isClosed && BigInt(client.cursorId) < BigInt(message.id)
+            ));
+            const sent = await Promise.allSettled(
+              recipients.map((client) => client.send(message)),
+            );
+            await Promise.all(sent.flatMap((result, index) => {
+              if (result.status === "fulfilled") return [];
+              const client = recipients[index];
+              if (!client) return [];
+              this.clients.delete(client);
+              console.error("SSE client delivery failed", {
+                streamKey: this.streamKey,
+                reason: result.reason,
+              });
+              return [client.close()];
+            }));
+          }
+          if (messages.length < STREAM_BATCH_SIZE) break;
+        }
+      }
+    } catch (error) {
+      console.error("SSE stream fan-out failed", { streamKey: this.streamKey, error });
+    } finally {
+      this.pumping = false;
+      if (this.pumpRequested && this.clients.size > 0) void this.pump();
+    }
+  }
+}
+
+const activeGroups = new Map<string, StreamClientGroup>();
 let pendingClients = 0;
+
+function activeClientCount(): number {
+  let count = 0;
+  for (const group of activeGroups.values()) count += group.clients.size;
+  return count;
+}
+
+function groupFor(streamKey: string): StreamClientGroup {
+  const existing = activeGroups.get(streamKey);
+  if (existing) return existing;
+  const created = new StreamClientGroup(streamKey);
+  activeGroups.set(streamKey, created);
+  return created;
+}
+
+function removeClient(client: DurableSseClient): void {
+  const group = activeGroups.get(client.streamKey);
+  if (!group) return;
+  group.remove(client);
+  if (group.clients.size === 0) activeGroups.delete(client.streamKey);
+}
 
 export class SseNotificationEngine {
   private started = false;
@@ -113,8 +182,8 @@ export class SseNotificationEngine {
     const listener = this.listener;
     this.listener = undefined;
     if (listener) await listener.end().catch(() => undefined);
-    await Promise.all([...activeClients].map((client) => client.close()));
-    activeClients.clear();
+    await Promise.all([...activeGroups.values()].map((group) => group.close()));
+    activeGroups.clear();
   }
 
   private async connect(): Promise<void> {
@@ -132,8 +201,14 @@ export class SseNotificationEngine {
     listener.once("error", disconnected);
     listener.once("end", () => disconnected());
     listener.on("notification", (message) => {
-      if (!/^\d+$/.test(message.payload ?? "")) return;
-      for (const client of activeClients) client.wake();
+      const messageId = message.payload ?? "";
+      if (!/^\d+$/.test(messageId)) return;
+      void streamsHandlers.getMessageStreamKey(messageId).then((streamKey) => {
+        if (streamKey) activeGroups.get(streamKey)?.wake();
+      }).catch((error) => {
+        console.error("SSE notification lookup failed", error);
+        for (const group of activeGroups.values()) group.wake();
+      });
     });
 
     try {
@@ -144,7 +219,7 @@ export class SseNotificationEngine {
       }
       await listener.query(`LISTEN "${sseConfig.channel}"`);
       console.log(`SSE listener active on "${sseConfig.channel}"`);
-      for (const client of activeClients) client.wake();
+      for (const group of activeGroups.values()) group.wake();
     } catch (error) {
       disconnected(error instanceof Error ? error : new Error(String(error)));
     }
@@ -168,11 +243,11 @@ export function startSseNotificationEngine(): void {
 
 function resumeCursor(c: Context): string {
   const value = c.req.header("Last-Event-ID") ?? c.req.query("lastEventId") ?? "0";
-  return /^\d+$/.test(value) ? value : "0";
+  return SseUtils.cursor(value);
 }
 
 export const streamEvents = (c: Context) => {
-  if (activeClients.size + pendingClients >= sseConfig.maxClients) {
+  if (activeClientCount() + pendingClients >= sseConfig.maxClients) {
     return c.json({
       error: { code: "sse_capacity_reached", message: "Too many stream connections" },
     }, 429);
@@ -191,13 +266,14 @@ export const streamEvents = (c: Context) => {
       const highWaterMark = await streamsHandlers.getHighWaterMark(streamKey);
       client = new DurableSseClient(streamKey, cursor, stream);
       await client.replayThrough(highWaterMark);
-      activeClients.add(client);
+      const group = groupFor(streamKey);
+      group.add(client);
       pendingClients -= 1;
       reservationHeld = false;
       stream.onAbort(() => {
-        if (client) activeClients.delete(client);
+        if (client) removeClient(client);
       });
-      client.wake();
+      group.wake();
 
       while (!stream.aborted && !stream.closed) {
         await stream.sleep(sseConfig.heartbeatMs);
@@ -205,7 +281,7 @@ export const streamEvents = (c: Context) => {
         await stream.write(": heartbeat\n\n");
       }
     } finally {
-      if (client) activeClients.delete(client);
+      if (client) removeClient(client);
       if (reservationHeld) pendingClients = Math.max(0, pendingClients - 1);
     }
   });

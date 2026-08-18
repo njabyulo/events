@@ -7,7 +7,12 @@ export const threadsRouter = new Hono();
 
 threadsRouter.use("*", requireApiToken);
 threadsRouter.get("/", async (c) => c.json({
-  data: await threadsHandlers.list(c.req.query("streamKey")),
+  data: await threadsHandlers.list({
+    streamKey: c.req.query("streamKey"),
+    limit: c.req.query("limit"),
+    beforeLastEventAt: c.req.query("beforeLastEventAt"),
+    beforeId: c.req.query("beforeId"),
+  }),
 }));
 threadsRouter.post("/:id/ack", async (c) => {
   await threadsHandlers.ack(pathParam(c, "id"), await jsonObject(c));
