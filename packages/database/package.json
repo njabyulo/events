@@ -11,10 +11,6 @@
       "types": "./dist/events.d.mts",
       "default": "./dist/events.mjs"
     },
-    "./outbox": {
-      "types": "./dist/outbox.d.mts",
-      "default": "./dist/outbox.mjs"
-    },
     "./queues": {
       "types": "./dist/queues.d.mts",
       "default": "./dist/queues.mjs"

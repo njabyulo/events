@@ -15,7 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 
 export const eventsTable = pgTable("events", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
 
   source: text().notNull(),
   source_event_id: text().notNull(),
@@ -29,7 +29,7 @@ export const eventsTable = pgTable("events", {
   ingested_at: timestamp({ withTimezone: true }).defaultNow().notNull(),
 
   correlation_id: text(),
-  causation_event_id: bigint("causation_event_id", { mode: "number" }),
+  causation_event_id: bigint("causation_event_id", { mode: "bigint" }),
   trace_id: text(),
 
   detail: jsonb().notNull().default({}),
@@ -46,10 +46,11 @@ export const eventsTable = pgTable("events", {
   ),
   index("events_type_time_idx").on(table.type, table.occurred_at.desc()),
   index("events_source_time_idx").on(table.source, table.occurred_at.desc()),
+  index("events_time_idx").on(table.occurred_at.desc(), table.id.desc()),
 ]);
 
 export const eventLinksTable = pgTable("event_links", {
-  event_id: bigint("event_id", { mode: "number" })
+  event_id: bigint("event_id", { mode: "bigint" })
     .notNull()
     .references(() => eventsTable.id),
   kind: text().notNull(),
@@ -60,7 +61,7 @@ export const eventLinksTable = pgTable("event_links", {
 ]);
 
 export const outboxTable = pgTable("outbox", {
-  event_id: bigint("event_id", { mode: "number" })
+  event_id: bigint("event_id", { mode: "bigint" })
     .primaryKey()
     .references(() => eventsTable.id),
   status: text().notNull().default("pending"),
@@ -73,13 +74,14 @@ export const outboxTable = pgTable("outbox", {
 }, (table) => [
   check(
     "outbox_status_check",
-    sql`${table.status} in ('pending', 'processing', 'completed', 'failed')`,
+    sql`${table.status} in ('pending', 'processing', 'completed', 'failed', 'dead')`,
   ),
   index("outbox_claim_idx")
-    .on(table.available_at)
+    .on(table.available_at, table.event_id)
     .where(sql`${table.status} in ('pending', 'failed')`),
-  index("outbox_router_claim_idx")
-    .on(table.status, table.available_at, table.locked_until),
+  index("outbox_expired_lease_idx")
+    .on(table.locked_until, table.event_id)
+    .where(sql`${table.status} = 'processing'`),
 ]);
 
 export const sourceCursorsTable = pgTable("source_cursors", {

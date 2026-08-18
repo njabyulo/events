@@ -2,6 +2,7 @@ export { createRoutingRepo, RoutingRepo, routingRepo } from "./routing.repo.js";
 export type { CreateReplayInput, RoutingRepoDependencies } from "./routing.repo.js";
 export type {
   ClaimedRoutingWork,
+  ClaimedReplay,
   CommitRoutingResult,
   EventRouteRecord,
   EventRoutingSkipRecord,

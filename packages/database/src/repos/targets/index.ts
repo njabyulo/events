@@ -3,6 +3,8 @@ export type {
   CreateTargetInput,
   DeleteTargetResult,
   UpdateTargetInput,
+  TargetTestResult,
+  TargetsRepoDependencies,
 } from "./targets.repo.js";
 export type {
   QueueRecord,

@@ -140,7 +140,16 @@ export type ReplayRecord = {
   ruleId: string | null;
   ruleVersion: number | null;
   status: "pending" | "running" | "completed" | "failed";
-  eventsMatched: number | null;
+  eventsMatched: number;
+  attempts: number;
+  lastEventId: string | null;
+  lockedUntil: string | null;
+  lastError: string | null;
   createdAt: string;
+  updatedAt: string;
   completedAt: string | null;
+};
+
+export type ClaimedReplay = ReplayRecord & {
+  leaseToken: string;
 };

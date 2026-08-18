@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import {
   and,
   asc,
+  desc,
   eq,
+  gt,
   gte,
   inArray,
   isNull,
   lte,
+  lt,
   ne,
   or,
   sql,
@@ -27,10 +30,13 @@ import {
   targetsTable,
 } from "../../schemas/routing.schema.js";
 import { streamMessagesTable } from "../../schemas/transport.schema.js";
+import { escalationsTable } from "../../schemas/escalations.schema.js";
 import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
+import { databaseId, requiredDatabaseId } from "../database-id.js";
 import type {
   ClaimedRoutingWork,
+  ClaimedReplay,
   CommitRoutingResult,
   EventRouteRecord,
   EventRoutingSkipRecord,
@@ -54,6 +60,7 @@ export type RoutingRepoDependencies = {
   database: Database;
   sseChannel: string;
   queueChannel: string;
+  ruleCacheTtlMs: number;
 };
 
 export type CreateReplayInput = {
@@ -89,18 +96,46 @@ function toReplay(row: typeof replaysTable.$inferSelect): ReplayRecord {
     ruleId: row.rule_id === null ? null : String(row.rule_id),
     ruleVersion: row.rule_version,
     status: row.status as ReplayRecord["status"],
-    eventsMatched: row.events_matched,
+    eventsMatched: row.events_matched ?? 0,
+    attempts: row.attempts,
+    lastEventId: row.last_event_id === null ? null : String(row.last_event_id),
+    lockedUntil: row.locked_until?.toISOString() ?? null,
+    lastError: row.last_error,
     createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
     completedAt: row.completed_at?.toISOString() ?? null,
   };
 }
 
 export class RoutingRepo {
+  private ruleCache?: { expiresAt: number; snapshots: RuleSnapshot[] };
+
   constructor(private readonly dependencies: RoutingRepoDependencies) {}
+
+  private async loadCachedCurrentRules(executor: QueryExecutor): Promise<RuleSnapshot[]> {
+    if (this.ruleCache && this.ruleCache.expiresAt > Date.now()) {
+      return this.ruleCache.snapshots;
+    }
+    const snapshots = await this.loadCurrentRuleSnapshots(executor, and(
+      isNull(rulesTable.deleted_at),
+      or(
+        eq(rulesTable.name, DEFAULT_RULE_NAME),
+        and(
+          ne(rulesTable.name, DEFAULT_RULE_NAME),
+          eq(rulesTable.enabled, true),
+        ),
+      ),
+    ));
+    this.ruleCache = {
+      expiresAt: Date.now() + this.dependencies.ruleCacheTtlMs,
+      snapshots,
+    };
+    return snapshots;
+  }
 
   private async loadEvent(
     executor: QueryExecutor,
-    eventId: number,
+    eventId: bigint,
   ): Promise<StoredEvent> {
     const rows = await executor
       .select({ event: eventsTable, link: eventLinksTable })
@@ -139,7 +174,7 @@ export class RoutingRepo {
       .where(where)
       .orderBy(asc(rulesTable.id), asc(targetsTable.id));
 
-    const snapshots = new Map<number, RuleSnapshot>();
+    const snapshots = new Map<bigint, RuleSnapshot>();
     for (const { rule, version, target, queue } of rows) {
       const ruleSnapshot = snapshots.get(rule.id) ?? {
         id: String(rule.id),
@@ -216,17 +251,8 @@ export class RoutingRepo {
       const claimed = result.rows[0];
       if (!claimed) return null;
 
-      const eventId = Number(claimed.event_id);
-      const ruleSnapshots = await this.loadCurrentRuleSnapshots(transaction, and(
-        isNull(rulesTable.deleted_at),
-        or(
-          eq(rulesTable.name, DEFAULT_RULE_NAME),
-          and(
-            ne(rulesTable.name, DEFAULT_RULE_NAME),
-            eq(rulesTable.enabled, true),
-          ),
-        ),
-      ));
+      const eventId = BigInt(String(claimed.event_id));
+      const ruleSnapshots = await this.loadCachedCurrentRules(transaction);
       const defaultRule = ruleSnapshots.find(({ name }) => name === DEFAULT_RULE_NAME);
       const rules = ruleSnapshots.filter(({ name }) => name !== DEFAULT_RULE_NAME);
       if (
@@ -258,10 +284,12 @@ export class RoutingRepo {
     if (!Number.isSafeInteger(visibilityTimeoutMs) || visibilityTimeoutMs < 1) {
       throw new RangeError("visibilityTimeoutMs must be a positive integer");
     }
+    const parsedEventId = databaseId(eventId);
+    if (parsedEventId === null) return false;
     const [renewed] = await this.dependencies.database.update(outboxTable).set({
       locked_until: sql`now() + (${visibilityTimeoutMs} * interval '1 millisecond')`,
     }).where(and(
-      eq(outboxTable.event_id, Number(eventId)),
+      eq(outboxTable.event_id, parsedEventId),
       eq(outboxTable.status, "processing"),
       eq(outboxTable.lease_token, leaseToken),
     )).returning({ eventId: outboxTable.event_id });
@@ -273,22 +301,32 @@ export class RoutingRepo {
     leaseToken: string,
     error: string,
     retryDelayMs: number,
-  ): Promise<boolean> {
+    maxAttempts: number,
+  ): Promise<"retry_scheduled" | "dead" | "lease_lost"> {
     if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0) {
       throw new RangeError("retryDelayMs must be a non-negative integer");
     }
+    if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
+      throw new RangeError("maxAttempts must be a positive integer");
+    }
+    const parsedEventId = databaseId(eventId);
+    if (parsedEventId === null) return "lease_lost";
     const [failed] = await this.dependencies.database.update(outboxTable).set({
-      status: "failed",
+      status: sql`case when ${outboxTable.attempts} >= ${maxAttempts}
+        then 'dead' else 'failed' end`,
       available_at: sql`now() + (${retryDelayMs} * interval '1 millisecond')`,
       locked_until: null,
       lease_token: null,
       last_error: error.slice(0, 1_000),
+      completed_at: sql`case when ${outboxTable.attempts} >= ${maxAttempts}
+        then now() else null end`,
     }).where(and(
-      eq(outboxTable.event_id, Number(eventId)),
+      eq(outboxTable.event_id, parsedEventId),
       eq(outboxTable.status, "processing"),
       eq(outboxTable.lease_token, leaseToken),
-    )).returning({ eventId: outboxTable.event_id });
-    return failed !== undefined;
+    )).returning({ status: outboxTable.status });
+    if (!failed) return "lease_lost";
+    return failed.status === "dead" ? "dead" : "retry_scheduled";
   }
 
   async markRuleInvalid(
@@ -296,8 +334,8 @@ export class RoutingRepo {
     ruleVersion: number,
     message: string,
   ): Promise<void> {
-    const numericRuleId = Number(ruleId);
-    if (!Number.isSafeInteger(numericRuleId) || numericRuleId <= 0) return;
+    const numericRuleId = databaseId(ruleId);
+    if (numericRuleId === null) return;
 
     await this.dependencies.database.update(rulesTable).set({
       enabled: false,
@@ -313,8 +351,8 @@ export class RoutingRepo {
 
   private async createDeliveries(
     transaction: DatabaseTransaction,
-    eventId: number,
-    replayId: number | null,
+    eventId: bigint,
+    replayId: bigint | null,
     decisions: RoutingDecision[],
   ): Promise<Pick<
     CommitRoutingResult,
@@ -324,9 +362,9 @@ export class RoutingRepo {
       (decision) => decision.delivery.kind !== "skipped",
     );
     const targetIds = [...new Set(
-      deliveryDecisions.map((decision) => Number(decision.target.id)),
+      deliveryDecisions.map((decision) => requiredDatabaseId(decision.target.id, "targetId")),
     )];
-    const activeTargetIds = new Set<number>();
+    const activeTargetIds = new Set<bigint>();
     if (targetIds.length > 0) {
       const activeTargets = await transaction
         .select({ id: targetsTable.id })
@@ -344,19 +382,19 @@ export class RoutingRepo {
       if (decision.delivery.kind === "skipped") {
         return [{ decision, reason: decision.delivery.reason }];
       }
-      return activeTargetIds.has(Number(decision.target.id))
+      return activeTargetIds.has(requiredDatabaseId(decision.target.id, "targetId"))
         ? []
         : [{ decision, reason: "target_disabled_during_routing" }];
     });
     const activeDecisions = deliveryDecisions.filter(
-      (decision) => activeTargetIds.has(Number(decision.target.id)),
+      (decision) => activeTargetIds.has(requiredDatabaseId(decision.target.id, "targetId")),
     );
 
     const queueDecisions = activeDecisions.filter(
       (decision) => decision.delivery.kind === "queue",
     );
     const queueIds = [...new Set(queueDecisions.map((decision) => (
-      Number(decision.delivery.kind === "queue" ? decision.delivery.queueId : NaN)
+      requiredDatabaseId(decision.delivery.kind === "queue" ? decision.delivery.queueId : "0", "queueId")
     )))];
     if (queueIds.length > 0) {
       const queues = await transaction
@@ -378,9 +416,9 @@ export class RoutingRepo {
       ? await transaction.insert(eventRoutingSkipsTable).values(
         skippedDecisions.map(({ decision, reason }) => ({
           event_id: eventId,
-          rule_id: Number(decision.ruleId),
+          rule_id: requiredDatabaseId(decision.ruleId, "ruleId"),
           rule_version: decision.ruleVersion,
-          target_id: Number(decision.target.id),
+          target_id: requiredDatabaseId(decision.target.id, "targetId"),
           replay_id: replayId,
           reason,
         })),
@@ -391,9 +429,9 @@ export class RoutingRepo {
       ? await transaction.insert(eventRoutesTable).values(
         activeDecisions.map((decision) => ({
           event_id: eventId,
-          rule_id: Number(decision.ruleId),
+          rule_id: requiredDatabaseId(decision.ruleId, "ruleId"),
           rule_version: decision.ruleVersion,
-          target_id: Number(decision.target.id),
+          target_id: requiredDatabaseId(decision.target.id, "targetId"),
           replay_id: replayId,
           priority: decision.priority,
           rule_pattern: decision.rulePattern,
@@ -408,14 +446,14 @@ export class RoutingRepo {
       })
       : [];
 
-    const routeKey = (ruleId: number, ruleVersion: number, targetId: number): string => (
+    const routeKey = (ruleId: bigint, ruleVersion: number, targetId: bigint): string => (
       `${ruleId}:${ruleVersion}:${targetId}`
     );
     const decisionsByRoute = new Map(activeDecisions.map((decision) => [
       routeKey(
-        Number(decision.ruleId),
+        requiredDatabaseId(decision.ruleId, "ruleId"),
         decision.ruleVersion,
-        Number(decision.target.id),
+        requiredDatabaseId(decision.target.id, "targetId"),
       ),
       decision,
     ]));
@@ -431,7 +469,7 @@ export class RoutingRepo {
     const queueMessages = createdDeliveries.flatMap(({ decision, route }) => (
       decision.delivery.kind === "queue"
         ? [{
-          queue_id: Number(decision.delivery.queueId),
+          queue_id: requiredDatabaseId(decision.delivery.queueId, "queueId"),
           event_id: eventId,
           route_id: route.id,
           message_group_id: decision.delivery.messageGroupId,
@@ -440,6 +478,7 @@ export class RoutingRepo {
         }]
         : []
     ));
+    let deliveriesCreated = 0;
     if (queueMessages.length > 0) {
       const insertedMessages = await transaction.insert(queueMessagesTable)
         .values(queueMessages)
@@ -451,6 +490,7 @@ export class RoutingRepo {
           ${String(message.id)}
         )`);
       }
+      deliveriesCreated += insertedMessages.length;
     }
 
     const streamMessages = createdDeliveries.flatMap(({ decision, route }) => (
@@ -478,11 +518,30 @@ export class RoutingRepo {
           ${String(message.id)}
         )`);
       }
+      deliveriesCreated += insertedMessages.length;
+    }
+
+    const smsDeliveries = createdDeliveries.flatMap(({ decision, route }) => (
+      decision.delivery.kind === "sms"
+        ? [{
+          event_id: eventId,
+          route_id: route.id,
+          reason: `event routed to SMS target ${decision.target.name}`,
+          receive_count: 1,
+        }]
+        : []
+    ));
+    if (smsDeliveries.length > 0) {
+      const insertedEscalations = await transaction.insert(escalationsTable)
+        .values(smsDeliveries)
+        .onConflictDoNothing()
+        .returning({ id: escalationsTable.id });
+      deliveriesCreated += insertedEscalations.length;
     }
 
     return {
       routesCreated: insertedRoutes.length,
-      deliveriesCreated: createdDeliveries.length,
+      deliveriesCreated,
       skipsRecorded: insertedSkips.length,
     };
   }
@@ -492,11 +551,20 @@ export class RoutingRepo {
     leaseToken: string,
     decisions: RoutingDecision[],
   ): Promise<CommitRoutingResult> {
+    const parsedEventId = databaseId(eventId);
+    if (parsedEventId === null) {
+      return {
+        committed: false,
+        routesCreated: 0,
+        deliveriesCreated: 0,
+        skipsRecorded: 0,
+      };
+    }
     return this.dependencies.database.transaction(async (transaction) => {
       const [lease] = await transaction.select({ eventId: outboxTable.event_id })
         .from(outboxTable)
         .where(and(
-          eq(outboxTable.event_id, Number(eventId)),
+          eq(outboxTable.event_id, parsedEventId),
           eq(outboxTable.status, "processing"),
           eq(outboxTable.lease_token, leaseToken),
         ))
@@ -513,7 +581,7 @@ export class RoutingRepo {
 
       const created = await this.createDeliveries(
         transaction,
-        Number(eventId),
+        parsedEventId,
         null,
         decisions,
       );
@@ -524,7 +592,7 @@ export class RoutingRepo {
         completed_at: new Date(),
         last_error: null,
       }).where(and(
-        eq(outboxTable.event_id, Number(eventId)),
+        eq(outboxTable.event_id, parsedEventId),
         eq(outboxTable.lease_token, leaseToken),
       ));
 
@@ -533,8 +601,10 @@ export class RoutingRepo {
   }
 
   async getEventRoutes(eventId: string): Promise<EventRouteRecord[]> {
+    const parsedEventId = databaseId(eventId);
+    if (parsedEventId === null) return [];
     const rows = await this.dependencies.database.select().from(eventRoutesTable)
-      .where(eq(eventRoutesTable.event_id, Number(eventId)))
+      .where(eq(eventRoutesTable.event_id, parsedEventId))
       .orderBy(asc(eventRoutesTable.id));
     return rows.map((row) => ({
       id: String(row.id),
@@ -552,8 +622,10 @@ export class RoutingRepo {
   }
 
   async getEventRoutingSkips(eventId: string): Promise<EventRoutingSkipRecord[]> {
+    const parsedEventId = databaseId(eventId);
+    if (parsedEventId === null) return [];
     const rows = await this.dependencies.database.select().from(eventRoutingSkipsTable)
-      .where(eq(eventRoutingSkipsTable.event_id, Number(eventId)))
+      .where(eq(eventRoutingSkipsTable.event_id, parsedEventId))
       .orderBy(asc(eventRoutingSkipsTable.id));
     return rows.map((row) => ({
       id: String(row.id),
@@ -573,7 +645,9 @@ export class RoutingRepo {
         requested_by: input.requestedBy,
         reason: input.reason,
         event_filter: input.eventFilter,
-        rule_id: input.ruleId === null ? null : Number(input.ruleId),
+        rule_id: input.ruleId === null
+          ? null
+          : requiredDatabaseId(input.ruleId, "ruleId"),
         rule_version: input.ruleVersion,
       }).returning();
       if (!replay) throw new Error("Replay insert returned no row");
@@ -595,45 +669,99 @@ export class RoutingRepo {
   }
 
   async getReplay(id: string): Promise<ReplayRecord | null> {
+    const replayId = databaseId(id);
+    if (replayId === null) return null;
     const [row] = await this.dependencies.database.select().from(replaysTable)
-      .where(eq(replaysTable.id, Number(id)))
+      .where(eq(replaysTable.id, replayId))
       .limit(1);
     return row ? toReplay(row) : null;
   }
 
-  async listReplays(): Promise<ReplayRecord[]> {
+  async listReplays(limit = 100, beforeId?: string): Promise<ReplayRecord[]> {
+    const cursor = beforeId === undefined ? undefined : databaseId(beforeId);
     const rows = await this.dependencies.database.select().from(replaysTable)
-      .orderBy(asc(replaysTable.id));
+      .where(cursor === undefined ? undefined : lt(replaysTable.id, cursor ?? 0n))
+      .orderBy(desc(replaysTable.id))
+      .limit(limit);
     return rows.map(toReplay);
   }
 
-  async setReplayStatus(
-    id: string,
-    status: ReplayRecord["status"],
-    eventsMatched?: number,
-  ): Promise<void> {
-    await this.dependencies.database.update(replaysTable).set({
-      status,
-      events_matched: eventsMatched,
-      completed_at: status === "completed" || status === "failed" ? new Date() : null,
-    }).where(eq(replaysTable.id, Number(id)));
+  async claimReplay(leaseSeconds: number): Promise<ClaimedReplay | null> {
+    if (!Number.isSafeInteger(leaseSeconds) || leaseSeconds < 1) {
+      throw new RangeError("leaseSeconds must be a positive integer");
+    }
+    const leaseToken = randomUUID();
+    return this.dependencies.database.transaction(async (transaction) => {
+      const result = await transaction.execute(sql`
+        with candidate as (
+          select id
+          from replays
+          where (
+            status = 'pending' and available_at <= now()
+          ) or (
+            status = 'running' and locked_until <= now()
+          )
+          order by available_at, id
+          for update skip locked
+          limit 1
+        )
+        update replays as replay
+        set status = 'running',
+            lease_token = ${leaseToken},
+            locked_until = now() + (${leaseSeconds} * interval '1 second'),
+            attempts = attempts + 1,
+            last_error = null,
+            updated_at = now()
+        from candidate
+        where replay.id = candidate.id
+        returning replay.id
+      `);
+      const raw = result.rows[0];
+      if (!raw) return null;
+      const [row] = await transaction.select().from(replaysTable)
+        .where(eq(replaysTable.id, BigInt(String(raw.id))))
+        .limit(1);
+      if (!row) throw new Error("Claimed replay disappeared");
+      return { ...toReplay(row), leaseToken };
+    });
   }
 
-  async loadReplayEvents(filter: ReplayFilter): Promise<StoredEvent[]> {
+  async loadReplayEvents(
+    filter: ReplayFilter,
+    afterEventId = "0",
+    limit = 100,
+  ): Promise<StoredEvent[]> {
+    const after = afterEventId === "0" ? 0n : databaseId(afterEventId);
+    if (after === null) throw new RangeError("afterEventId must be a non-negative integer");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new RangeError("limit must be between 1 and 1000");
+    }
     const conditions = [];
+    conditions.push(gt(eventsTable.id, after));
     if (filter.source?.length) conditions.push(inArray(eventsTable.source, filter.source));
     if (filter.type?.length) conditions.push(inArray(eventsTable.type, filter.type));
     if (filter.from) conditions.push(gte(eventsTable.occurred_at, new Date(filter.from)));
     if (filter.to) conditions.push(lte(eventsTable.occurred_at, new Date(filter.to)));
     if (filter.eventIds?.length) {
-      conditions.push(inArray(eventsTable.id, filter.eventIds.map(Number)));
+      conditions.push(inArray(
+        eventsTable.id,
+        filter.eventIds.map((id) => requiredDatabaseId(id, "eventId")),
+      ));
     }
+
+    const eventIds = await this.dependencies.database
+      .select({ id: eventsTable.id })
+      .from(eventsTable)
+      .where(and(...conditions))
+      .orderBy(asc(eventsTable.id))
+      .limit(limit);
+    if (eventIds.length === 0) return [];
 
     const rows = await this.dependencies.database
       .select({ event: eventsTable, link: eventLinksTable })
       .from(eventsTable)
       .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, eventsTable.id))
-      .where(conditions.length ? and(...conditions) : undefined)
+      .where(inArray(eventsTable.id, eventIds.map(({ id }) => id)))
       .orderBy(asc(eventsTable.id));
     return toStoredEvents(rows);
   }
@@ -650,7 +778,8 @@ export class RoutingRepo {
       ));
     }
 
-    const numericRuleId = Number(ruleId);
+    const numericRuleId = databaseId(ruleId);
+    if (numericRuleId === null) return [];
     return this.loadRuleSnapshots(
       this.dependencies.database,
       eq(rulesTable.id, numericRuleId),
@@ -660,20 +789,81 @@ export class RoutingRepo {
     );
   }
 
-  async commitReplayEvent(
+  async commitReplayBatch(
     replayId: string,
-    eventId: string,
-    decisions: RoutingDecision[],
-  ): Promise<CommitRoutingResult> {
-    return this.dependencies.database.transaction(async (transaction) => ({
-      committed: true,
-      ...await this.createDeliveries(
-        transaction,
-        Number(eventId),
-        Number(replayId),
-        decisions,
-      ),
-    }));
+    leaseToken: string,
+    events: { eventId: string; decisions: RoutingDecision[] }[],
+    completed: boolean,
+  ): Promise<boolean> {
+    return this.dependencies.database.transaction(async (transaction) => {
+      const parsedReplayId = databaseId(replayId);
+      if (parsedReplayId === null) return false;
+      const [lease] = await transaction.select({ id: replaysTable.id })
+        .from(replaysTable)
+        .where(and(
+          eq(replaysTable.id, parsedReplayId),
+          eq(replaysTable.status, "running"),
+          eq(replaysTable.lease_token, leaseToken),
+          gt(replaysTable.locked_until, sql`now()`),
+        ))
+        .for("update")
+        .limit(1);
+      if (!lease) return false;
+
+      for (const event of events) {
+        await this.createDeliveries(
+          transaction,
+          requiredDatabaseId(event.eventId, "eventId"),
+          parsedReplayId,
+          event.decisions,
+        );
+      }
+
+      const lastEventId = events.at(-1)?.eventId;
+      const [updated] = await transaction.update(replaysTable).set({
+        status: completed ? "completed" : "pending",
+        events_matched: sql`coalesce(${replaysTable.events_matched}, 0) + ${events.length}`,
+        last_event_id: lastEventId === undefined
+          ? undefined
+          : requiredDatabaseId(lastEventId, "eventId"),
+        available_at: new Date(),
+        locked_until: null,
+        lease_token: null,
+        updated_at: new Date(),
+        completed_at: completed ? new Date() : null,
+      }).where(and(
+        eq(replaysTable.id, parsedReplayId),
+        eq(replaysTable.lease_token, leaseToken),
+      )).returning({ id: replaysTable.id });
+      return updated !== undefined;
+    });
+  }
+
+  async failReplay(
+    replayId: string,
+    leaseToken: string,
+    error: string,
+    retryDelaySeconds: number,
+    maxAttempts: number,
+  ): Promise<boolean> {
+    const parsedReplayId = databaseId(replayId);
+    if (parsedReplayId === null) return false;
+    const [updated] = await this.dependencies.database.update(replaysTable).set({
+      status: sql`case when ${replaysTable.attempts} >= ${maxAttempts}
+        then 'failed' else 'pending' end`,
+      available_at: sql`now() + (${retryDelaySeconds} * interval '1 second')`,
+      locked_until: null,
+      lease_token: null,
+      last_error: error.slice(0, 1_000),
+      updated_at: new Date(),
+      completed_at: sql`case when ${replaysTable.attempts} >= ${maxAttempts}
+        then now() else null end`,
+    }).where(and(
+      eq(replaysTable.id, parsedReplayId),
+      eq(replaysTable.status, "running"),
+      eq(replaysTable.lease_token, leaseToken),
+    )).returning({ id: replaysTable.id });
+    return updated !== undefined;
   }
 }
 
@@ -703,6 +893,7 @@ export const createRoutingRepo = (
     "QUEUE_CHANNEL",
     "queue_ready",
   ),
+  ruleCacheTtlMs: options.ruleCacheTtlMs ?? 1_000,
 });
 
 export const routingRepo = createRoutingRepo();

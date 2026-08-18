@@ -80,6 +80,7 @@ beforeEach(async () => {
   await testPool.query(`
     delete from escalation_attempts;
     delete from escalations;
+    delete from dead_letter_messages;
     delete from stream_messages;
     delete from triage_items;
     delete from thread_messages;
@@ -405,6 +406,11 @@ describe("retry scheduling", () => {
     );
     expect(remaining.rows[0]).toEqual({ count: 0 });
     expect((await queuesRepo.listAttempts(message.id)).at(-1)?.outcome).toBe("escalated");
+    await expect(queuesRepo.listDeadLetters(queue.id)).resolves.toMatchObject([{
+      originalMessageId: message.id,
+      reason: "max_receive_count_exceeded",
+      receiveCount: queue.maxReceiveCount,
+    }]);
 
     const claims = await Promise.all([
       escalationsRepo.claimNext(60),
@@ -441,7 +447,12 @@ describe("retry scheduling", () => {
       ) values
         ($1, $2, $3, 'first', 3),
         ($1, $2, $4, 'second', 3)
-    `, [message.eventId, queue.id, Number(message.id) + 1_000_000, Number(message.id) + 2_000_000]);
+    `, [
+      message.eventId,
+      queue.id,
+      String(BigInt(message.id) + 1_000_000n),
+      String(BigInt(message.id) + 2_000_000n),
+    ]);
     const [first, second] = await Promise.all([
       escalationsRepo.claimNext(60),
       escalationsRepo.claimNext(60),
@@ -470,6 +481,73 @@ describe("retry scheduling", () => {
       sum(attempt_count)::int as attempts
       from escalations`);
     expect(counts.rows[0]).toEqual({ reservations: 1, attempts: 1 });
+  });
+
+  test("moves a non-urgent poison message to the DLQ without escalating it", async () => {
+    const stored = await eventsRepo.ingestEvent(event());
+    const queue = await queuesRepo.getQueueByName("career");
+    if (!queue) throw new Error("Seeded career queue is missing");
+    const message = await queuesRepo.sendMessage({
+      queueId: queue.id,
+      eventId: stored.id,
+      delaySeconds: 0,
+      messageGroupId: "low-priority-poison",
+      priority: "low",
+    });
+    if (!message) throw new Error("Message was not enqueued");
+
+    for (let attempt = 1; attempt <= queue.maxReceiveCount; attempt += 1) {
+      const [claimed] = await queuesRepo.receiveMessages({
+        queueId: queue.id,
+        maxMessages: 1,
+        consumerName: "poison-worker",
+      }) ?? [];
+      await queuesRepo.nackMessage({
+        queueId: queue.id,
+        messageId: message.id,
+        receiptHandle: claimed!.receiptHandle!,
+        consumerName: "poison-worker",
+        delaySeconds: 1,
+        error: "cannot process",
+      });
+      if (attempt < queue.maxReceiveCount) {
+        await testPool.query(
+          "update queue_messages set visible_at = now() - interval '1 second' where id = $1",
+          [message.id],
+        );
+      }
+    }
+
+    await expect(escalationsRepo.list()).resolves.toEqual([]);
+    await expect(queuesRepo.listDeadLetters(queue.id)).resolves.toMatchObject([{
+      originalMessageId: message.id,
+      priority: "low",
+      lastError: "cannot process",
+      reason: "max_receive_count_exceeded",
+    }]);
+    expect((await queuesRepo.listAttempts(message.id)).at(-1)?.outcome)
+      .toBe("dead_lettered");
+  });
+
+  test("expires retained messages in bounded maintenance batches", async () => {
+    const { queue, message } = await enqueue("expired-message");
+    await testPool.query(`update queue_messages
+      set enqueued_at = now() - (($2 + 1) * interval '1 second')
+      where id = $1`, [message.id, queue.retentionSeconds]);
+
+    await expect(queuesRepo.runMaintenance(1)).resolves.toEqual({
+      deadLettered: 1,
+      expired: 1,
+    });
+    await expect(queuesRepo.listDeadLetters(queue.id)).resolves.toMatchObject([{
+      originalMessageId: message.id,
+      reason: "retention_expired",
+    }]);
+    expect((await queuesRepo.listAttempts(message.id)).at(-1)?.outcome).toBe("expired");
+    await expect(queuesRepo.runMaintenance(1)).resolves.toEqual({
+      deadLettered: 0,
+      expired: 0,
+    });
   });
 
   test("an urgent message whose final lease expires moves to escalation once", async () => {
@@ -577,5 +655,30 @@ describe("digest batches", () => {
       delayed: 1,
       inFlight: 0,
     });
+  });
+
+  test("bounds each digest claim so a large backlog cannot monopolize a run", async () => {
+    const digest = await queuesRepo.getQueueByName("digest");
+    if (!digest) throw new Error("Seeded digest queue is missing");
+    const stored = await eventsRepo.ingestEvent(event());
+    await testPool.query(`insert into queue_messages (
+      queue_id, event_id, message_group_id, priority
+    ) select $1, $2, 'digest-' || value, 'low'
+      from generate_series(1, 101) as value`, [digest.id, stored.id]);
+
+    const first = await queuesRepo.claimDigestMessages(
+      digest.id,
+      300,
+      "digest-scheduler",
+      100,
+    );
+    expect(first).toHaveLength(100);
+    const second = await queuesRepo.claimDigestMessages(
+      digest.id,
+      300,
+      "digest-scheduler",
+      100,
+    );
+    expect(second).toHaveLength(1);
   });
 });

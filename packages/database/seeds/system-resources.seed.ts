@@ -63,7 +63,7 @@ const ruleDefinitions: RuleDefinition[] = [
 
 export async function seedSystemResources(database: Database = db): Promise<void> {
   await database.transaction(async (transaction) => {
-    const queueIds = new Map<string, number>();
+    const queueIds = new Map<string, bigint>();
     for (const definition of queueDefinitions) {
       await transaction.insert(queuesTable).values(definition).onConflictDoNothing();
       const [queue] = await transaction.select().from(queuesTable).where(and(
@@ -83,7 +83,7 @@ export async function seedSystemResources(database: Database = db): Promise<void
       queueIds.set(definition.name, queue.id);
     }
 
-    const targetIds = new Map<string, number>();
+    const targetIds = new Map<string, bigint>();
     for (const definition of ruleDefinitions) {
       if (targetIds.has(definition.targetName)) continue;
       const queueId = queueIds.get(definition.queueName);
@@ -128,7 +128,7 @@ export async function seedSystemResources(database: Database = db): Promise<void
 async function ensureRule(
   transaction: Transaction,
   definition: RuleDefinition,
-): Promise<number> {
+): Promise<bigint> {
   let [rule] = await transaction.select().from(rulesTable).where(and(
     eq(rulesTable.name, definition.name),
     isNull(rulesTable.deleted_at),

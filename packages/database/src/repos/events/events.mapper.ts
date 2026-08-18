@@ -45,7 +45,7 @@ export function toStoredEvent(
 }
 
 export function toStoredEvents(rows: EventWithLinkRow[]): StoredEvent[] {
-  const events = new Map<number, { event: EventRow; links: EventLink[] }>();
+  const events = new Map<bigint, { event: EventRow; links: EventLink[] }>();
 
   for (const row of rows) {
     const entry = events.get(row.event.id) ?? { event: row.event, links: [] };

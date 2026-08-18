@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { db, type Database } from "../../client.js";
 import { eventLinksTable, eventsTable } from "../../schemas/events.schema.js";
 import { queueMessagesTable } from "../../schemas/routing.schema.js";
@@ -10,6 +10,7 @@ import {
 } from "../../schemas/transport.schema.js";
 import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
+import { databaseId } from "../database-id.js";
 import type {
   ThreadRecord,
   ThreadSummaryRecord,
@@ -25,11 +26,6 @@ export type ThreadsRepoDependencies = {
   database: Database;
   sseChannel: string;
 };
-
-function numericId(value: string): number | null {
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
 
 function toThread(
   row: ThreadRow,
@@ -65,7 +61,20 @@ function toThreadSummary(row: ThreadRow, pendingItemCount: number): ThreadSummar
 export class ThreadsRepo {
   constructor(private readonly dependencies: ThreadsRepoDependencies) {}
 
-  async listThreads(streamKey: string, limit?: number): Promise<ThreadSummaryRecord[]> {
+  async listThreads(
+    streamKey: string,
+    limit = 100,
+    beforeLastEventAt?: string,
+    beforeId?: string,
+  ): Promise<ThreadSummaryRecord[]> {
+    const cursorTime = beforeLastEventAt === undefined ? undefined : new Date(beforeLastEventAt);
+    const cursorId = beforeId === undefined ? undefined : databaseId(beforeId) ?? undefined;
+    const cursor = cursorTime !== undefined && cursorId !== undefined
+      ? or(
+        lt(threadsTable.last_event_at, cursorTime),
+        and(eq(threadsTable.last_event_at, cursorTime), lt(threadsTable.id, cursorId)),
+      )
+      : undefined;
     const rows = await this.dependencies.database
       .select({
         thread: threadsTable,
@@ -77,17 +86,18 @@ export class ThreadsRepo {
         eq(triageItemsTable.stream_key, streamKey),
         eq(triageItemsTable.status, "pending"),
       ))
+      .where(cursor)
       .groupBy(threadsTable.id)
       .orderBy(desc(threadsTable.last_event_at), desc(threadsTable.id))
-      .limit(limit ?? 1_000);
+      .limit(limit);
     return rows.map(({ thread, pendingItemCount }) => (
       toThreadSummary(thread, Number(pendingItemCount))
     ));
   }
 
   async getThread(id: string, historyLimit = 250): Promise<ThreadRecord | null> {
-    const parsed = numericId(id);
-    if (!parsed) return null;
+    const parsed = databaseId(id);
+    if (parsed === null) return null;
     const [thread] = await this.dependencies.database.select().from(threadsTable)
       .where(eq(threadsTable.id, parsed))
       .limit(1);
@@ -113,11 +123,12 @@ export class ThreadsRepo {
       if (deleted.length !== messages.length) {
         throw new Error("Thread ACK lost a locked queue message");
       }
+      const itemsByMessageId = new Map(items.map((item) => [item.queue_message_id, item]));
       await transaction.insert(messageAttemptsTable).values(deleted.map((message) => ({
         message_id: message.id,
         queue_id: message.queue_id,
         event_id: message.event_id,
-        consumer_name: items.find((item) => item.queue_message_id === message.id)?.consumer_name,
+        consumer_name: itemsByMessageId.get(message.id)?.consumer_name,
         receipt_handle: message.receipt_handle,
         receive_count: message.receive_count,
         outcome: "acked",
@@ -154,12 +165,17 @@ export class ThreadsRepo {
       if (updated.length !== messages.length) {
         throw new Error("Thread snooze lost a locked queue message");
       }
+      const itemsByMessageId = new Map(items.map((item) => [item.queue_message_id, item]));
+      const receiptsByMessageId = new Map(messages.map((message) => [
+        message.id,
+        message.receipt_handle,
+      ]));
       await transaction.insert(messageAttemptsTable).values(updated.map((message) => ({
         message_id: message.id,
         queue_id: message.queue_id,
         event_id: message.event_id,
-        consumer_name: items.find((item) => item.queue_message_id === message.id)?.consumer_name,
-        receipt_handle: messages.find(({ id }) => id === message.id)?.receipt_handle,
+        consumer_name: itemsByMessageId.get(message.id)?.consumer_name,
+        receipt_handle: receiptsByMessageId.get(message.id),
         receive_count: message.receive_count,
         outcome: "snoozed",
         visible_until: message.visible_at,
@@ -196,8 +212,8 @@ export class ThreadsRepo {
       messages: QueueMessageRow[],
     ) => Promise<TriageActionResult>,
   ): Promise<TriageActionResult> {
-    const parsed = numericId(threadId);
-    if (!parsed) return "not_found";
+    const parsed = databaseId(threadId);
+    if (parsed === null) return "not_found";
     return this.dependencies.database.transaction(async (transaction) => {
       const [thread] = await transaction.select().from(threadsTable)
         .where(eq(threadsTable.id, parsed))
@@ -226,7 +242,7 @@ export class ThreadsRepo {
     });
   }
 
-  private async loadMessages(threadId: number, limit: number): Promise<StoredEvent[]> {
+  private async loadMessages(threadId: bigint, limit: number): Promise<StoredEvent[]> {
     const messageIds = await this.dependencies.database
       .select({
         eventId: threadMessagesTable.event_id,

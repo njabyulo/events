@@ -20,7 +20,7 @@ import { eventsTable } from "./events.schema.js";
 type JsonObject = Record<string, unknown>;
 
 export const rulesTable = pgTable("rules", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
   name: text().notNull(),
   enabled: boolean().notNull().default(true),
   current_version: integer().notNull().default(1),
@@ -36,7 +36,7 @@ export const rulesTable = pgTable("rules", {
 ]);
 
 export const ruleVersionsTable = pgTable("rule_versions", {
-  rule_id: bigint("rule_id", { mode: "number" })
+  rule_id: bigint("rule_id", { mode: "bigint" })
     .notNull()
     .references(() => rulesTable.id),
   version: integer().notNull(),
@@ -53,7 +53,7 @@ export const ruleVersionsTable = pgTable("rule_versions", {
 ]);
 
 export const queuesTable = pgTable("queues", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
   name: text().notNull(),
   fifo: boolean().notNull().default(false),
   visibility_timeout_seconds: integer().notNull().default(30),
@@ -74,7 +74,7 @@ export const queuesTable = pgTable("queues", {
 ]);
 
 export const targetsTable = pgTable("targets", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
   name: text().notNull(),
   kind: text().notNull(),
   config: jsonb().$type<JsonObject>().notNull().default({}),
@@ -93,8 +93,8 @@ export const targetsTable = pgTable("targets", {
 ]);
 
 export const targetTestsTable = pgTable("target_tests", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  target_id: bigint("target_id", { mode: "number" })
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
+  target_id: bigint("target_id", { mode: "bigint" })
     .notNull()
     .references(() => targetsTable.id),
   target_kind: text().notNull(),
@@ -102,7 +102,10 @@ export const targetTestsTable = pgTable("target_tests", {
   actor: text().notNull(),
   reason: text().notNull(),
   status: text().notNull().default("pending"),
+  last_error: text(),
+  completed_at: timestamp({ withTimezone: true }),
   created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   check(
     "target_tests_kind_check",
@@ -118,10 +121,10 @@ export const targetTestsTable = pgTable("target_tests", {
 ]);
 
 export const ruleTargetsTable = pgTable("rule_targets", {
-  rule_id: bigint("rule_id", { mode: "number" })
+  rule_id: bigint("rule_id", { mode: "bigint" })
     .notNull()
     .references(() => rulesTable.id),
-  target_id: bigint("target_id", { mode: "number" })
+  target_id: bigint("target_id", { mode: "bigint" })
     .notNull()
     .references(() => targetsTable.id),
   created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -130,15 +133,22 @@ export const ruleTargetsTable = pgTable("rule_targets", {
 ]);
 
 export const replaysTable = pgTable("replays", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
   requested_by: text().notNull(),
   reason: text().notNull(),
   event_filter: jsonb().$type<JsonObject>().notNull(),
-  rule_id: bigint("rule_id", { mode: "number" }).references(() => rulesTable.id),
+  rule_id: bigint("rule_id", { mode: "bigint" }).references(() => rulesTable.id),
   rule_version: integer(),
   status: text().notNull().default("pending"),
-  events_matched: integer(),
+  events_matched: integer().default(0),
+  attempts: integer().notNull().default(0),
+  last_event_id: bigint("last_event_id", { mode: "bigint" }),
+  available_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  locked_until: timestamp({ withTimezone: true }),
+  lease_token: uuid(),
+  last_error: text(),
   created_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  updated_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
   completed_at: timestamp({ withTimezone: true }),
 }, (table) => [
   check(
@@ -155,19 +165,25 @@ export const replaysTable = pgTable("replays", {
     foreignColumns: [ruleVersionsTable.rule_id, ruleVersionsTable.version],
     name: "replays_rule_version_fkey",
   }),
+  index("replays_pending_claim_idx")
+    .on(table.available_at, table.id)
+    .where(sql`${table.status} = 'pending'`),
+  index("replays_expired_lease_idx")
+    .on(table.locked_until, table.id)
+    .where(sql`${table.status} = 'running'`),
 ]);
 
 export const eventRoutesTable = pgTable("event_routes", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  event_id: bigint("event_id", { mode: "number" })
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
+  event_id: bigint("event_id", { mode: "bigint" })
     .notNull()
     .references(() => eventsTable.id),
-  rule_id: bigint("rule_id", { mode: "number" }).notNull(),
+  rule_id: bigint("rule_id", { mode: "bigint" }).notNull(),
   rule_version: integer().notNull(),
-  target_id: bigint("target_id", { mode: "number" })
+  target_id: bigint("target_id", { mode: "bigint" })
     .notNull()
     .references(() => targetsTable.id),
-  replay_id: bigint("replay_id", { mode: "number" }).references(() => replaysTable.id),
+  replay_id: bigint("replay_id", { mode: "bigint" }).references(() => replaysTable.id),
   priority: text().notNull(),
   rule_pattern: jsonb().$type<JsonObject>().notNull(),
   target_kind: text().notNull(),
@@ -203,16 +219,16 @@ export const eventRoutesTable = pgTable("event_routes", {
 ]);
 
 export const eventRoutingSkipsTable = pgTable("event_routing_skips", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  event_id: bigint("event_id", { mode: "number" })
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
+  event_id: bigint("event_id", { mode: "bigint" })
     .notNull()
     .references(() => eventsTable.id),
-  rule_id: bigint("rule_id", { mode: "number" }).notNull(),
+  rule_id: bigint("rule_id", { mode: "bigint" }).notNull(),
   rule_version: integer().notNull(),
-  target_id: bigint("target_id", { mode: "number" })
+  target_id: bigint("target_id", { mode: "bigint" })
     .notNull()
     .references(() => targetsTable.id),
-  replay_id: bigint("replay_id", { mode: "number" }).references(() => replaysTable.id),
+  replay_id: bigint("replay_id", { mode: "bigint" }).references(() => replaysTable.id),
   reason: text().notNull(),
   recorded_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -237,14 +253,14 @@ export const eventRoutingSkipsTable = pgTable("event_routing_skips", {
 ]);
 
 export const queueMessagesTable = pgTable("queue_messages", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
-  queue_id: bigint("queue_id", { mode: "number" })
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
+  queue_id: bigint("queue_id", { mode: "bigint" })
     .notNull()
     .references(() => queuesTable.id),
-  event_id: bigint("event_id", { mode: "number" })
+  event_id: bigint("event_id", { mode: "bigint" })
     .notNull()
     .references(() => eventsTable.id),
-  route_id: bigint("route_id", { mode: "number" }).references(() => eventRoutesTable.id),
+  route_id: bigint("route_id", { mode: "bigint" }).references(() => eventRoutesTable.id),
   message_group_id: text().notNull().default("default"),
   priority: text().notNull().default("normal"),
   visible_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -269,10 +285,44 @@ export const queueMessagesTable = pgTable("queue_messages", {
     table.message_group_id,
     table.id,
   ),
+  index("queue_messages_retention_idx").on(table.enqueued_at, table.id),
+]);
+
+export const deadLetterMessagesTable = pgTable("dead_letter_messages", {
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
+  original_message_id: bigint("original_message_id", { mode: "bigint" }).notNull(),
+  queue_id: bigint("queue_id", { mode: "bigint" })
+    .notNull()
+    .references(() => queuesTable.id),
+  event_id: bigint("event_id", { mode: "bigint" })
+    .notNull()
+    .references(() => eventsTable.id),
+  route_id: bigint("route_id", { mode: "bigint" }).references(() => eventRoutesTable.id),
+  message_group_id: text().notNull(),
+  priority: text().notNull(),
+  receive_count: integer().notNull(),
+  reason: text().notNull(),
+  last_error: text(),
+  enqueued_at: timestamp({ withTimezone: true }).notNull(),
+  dead_lettered_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique("dead_letter_messages_original_key").on(
+    table.queue_id,
+    table.original_message_id,
+  ),
+  check(
+    "dead_letter_messages_priority_check",
+    sql`${table.priority} in ('urgent', 'normal', 'low')`,
+  ),
+  index("dead_letter_messages_queue_time_idx").on(
+    table.queue_id,
+    table.dead_lettered_at.desc(),
+  ),
+  index("dead_letter_messages_event_idx").on(table.event_id),
 ]);
 
 export const adminActionsTable = pgTable("admin_actions", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
   actor: text().notNull(),
   action: text().notNull(),
   resource_type: text().notNull(),
@@ -281,4 +331,10 @@ export const adminActionsTable = pgTable("admin_actions", {
   before: jsonb().$type<JsonObject>(),
   after: jsonb().$type<JsonObject>(),
   occurred_at: timestamp({ withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [
+  index("admin_actions_resource_idx").on(
+    table.resource_type,
+    table.resource_id,
+    table.occurred_at.desc(),
+  ),
+]);

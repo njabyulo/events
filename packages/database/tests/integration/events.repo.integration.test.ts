@@ -9,10 +9,6 @@ import {
   type EventsRepo,
 } from "../../src/repos/events/events.repo.js";
 import type { EventToIngest } from "../../src/repos/events/events.types.js";
-import {
-  createOutboxRepo,
-  type OutboxRepo,
-} from "../../src/repos/outbox/outbox.repo.js";
 
 const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const schema = `ingestion_test_${randomUUID().replaceAll("-", "")}`;
@@ -20,7 +16,6 @@ const schema = `ingestion_test_${randomUUID().replaceAll("-", "")}`;
 let adminPool: Pool;
 let testPool: Pool;
 let eventsRepo: EventsRepo;
-let outboxRepo: OutboxRepo;
 
 function event(overrides: Partial<EventToIngest> = {}): EventToIngest {
   return {
@@ -76,7 +71,6 @@ beforeAll(async () => {
 
   const database = drizzle({ client: testPool });
   eventsRepo = createEventsRepo({ database, eventsChannel: "events_ready_test" });
-  outboxRepo = createOutboxRepo({ database });
 }, 30_000);
 
 afterAll(async () => {
@@ -166,25 +160,33 @@ describe("event ingestion transaction", () => {
     expect(result.rows[0]).toEqual({ count: 0 });
   });
 
-  test("keeps outbox work durable until a router claims and completes it", async () => {
-    const ingested = await eventsRepo.ingestEvent(event());
-    const beforeRouter = await testPool.query(
-      "select status from outbox where event_id = $1",
-      [ingested.id],
-    );
+  test("preserves PostgreSQL bigint IDs beyond JavaScript's safe integer range", async () => {
+    const expectedId = "9007199254740993";
+    await testPool.query("select setval('events_id_seq', $1, false)", [expectedId]);
 
-    expect(beforeRouter.rows).toEqual([{ status: "pending" }]);
+    const result = await eventsRepo.ingestEvent(event());
+    const stored = await eventsRepo.getEventById(expectedId);
 
-    const claimed = await outboxRepo.claimPending(100);
-    const work = claimed.find((item) => item.eventId === ingested.id);
-
-    expect(work).toBeDefined();
-    await expect(outboxRepo.complete(work!.eventId, work!.leaseToken)).resolves.toBe(true);
-
-    const afterRouter = await testPool.query(
-      "select status, completed_at is not null as completed from outbox where event_id = $1",
-      [ingested.id],
-    );
-    expect(afterRouter.rows).toEqual([{ status: "completed", completed: true }]);
+    expect(result.id).toBe(expectedId);
+    expect(stored?.id).toBe(expectedId);
   });
+
+  test("uses a stable occurred-at and ID cursor for bounded event pages", async () => {
+    const newest = await eventsRepo.ingestEvent(event({
+      occurredAt: "2026-08-18T12:00:00.000Z",
+    }));
+    const older = await eventsRepo.ingestEvent(event({
+      occurredAt: "2026-08-17T12:00:00.000Z",
+    }));
+
+    const firstPage = await eventsRepo.getEvents(1);
+    expect(firstPage).toHaveLength(1);
+    const cursor = firstPage[0]!;
+    const secondPage = await eventsRepo.getEvents(250, cursor.occurredAt, cursor.id);
+
+    expect(firstPage[0]?.id).toBe(newest.id);
+    expect(secondPage.map(({ id }) => id)).toContain(older.id);
+    expect(secondPage.map(({ id }) => id)).not.toContain(newest.id);
+  });
+
 });

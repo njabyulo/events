@@ -1,9 +1,10 @@
-import { and, asc, eq, gt, inArray, lte, max } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, lte, max, sql } from "drizzle-orm";
 import { db, type Database } from "../../client.js";
 import { eventLinksTable, eventsTable } from "../../schemas/events.schema.js";
 import { streamMessagesTable, triageItemsTable } from "../../schemas/transport.schema.js";
 import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
+import { databaseId } from "../database-id.js";
 import type { StreamMessageRecord, TriageItemRecord } from "./triage.types.js";
 
 type StreamRow = typeof streamMessagesTable.$inferSelect;
@@ -44,19 +45,58 @@ export class StreamsRepo {
     return String(row?.id ?? 0);
   }
 
+  async getMessageStreamKey(messageId: string): Promise<string | null> {
+    const id = databaseId(messageId);
+    if (id === null) return null;
+    const [row] = await this.database.select({ streamKey: streamMessagesTable.stream_key })
+      .from(streamMessagesTable)
+      .where(eq(streamMessagesTable.id, id))
+      .limit(1);
+    return row?.streamKey ?? null;
+  }
+
+  async pruneMessages(defaultRetentionSeconds: number, batchSize = 100): Promise<number> {
+    if (!Number.isSafeInteger(defaultRetentionSeconds) || defaultRetentionSeconds < 1) {
+      throw new RangeError("defaultRetentionSeconds must be a positive integer");
+    }
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 1_000) {
+      throw new RangeError("batchSize must be between 1 and 1000");
+    }
+    const result = await this.database.execute(sql`
+      delete from stream_messages as message
+      where message.id in (
+        select candidate.id
+        from stream_messages as candidate
+        left join event_routes as route on route.id = candidate.route_id
+        where candidate.created_at + (
+          case
+            when route.target_config->>'replayRetentionSeconds' ~ '^[1-9][0-9]*$'
+              then (route.target_config->>'replayRetentionSeconds')::int
+            else ${defaultRetentionSeconds}
+          end * interval '1 second'
+        ) <= now()
+        order by candidate.created_at, candidate.id
+        for update of candidate skip locked
+        limit ${batchSize}
+      )
+      returning message.id
+    `);
+    return result.rows.length;
+  }
+
   async listMessages(
     streamKey: string,
     afterId: string,
     throughId?: string,
     limit = 250,
   ): Promise<StreamMessageRecord[]> {
-    const after = Number(afterId);
-    const through = throughId === undefined ? undefined : Number(throughId);
+    const after = databaseId(afterId) ?? 0n;
+    const through = throughId === undefined ? undefined : databaseId(throughId) ?? undefined;
     const conditions = [
       eq(streamMessagesTable.stream_key, streamKey),
-      gt(streamMessagesTable.id, Number.isSafeInteger(after) ? after : 0),
+      gt(streamMessagesTable.id, after),
     ];
-    if (through !== undefined && Number.isSafeInteger(through)) {
+    if (through !== undefined) {
       conditions.push(lte(streamMessagesTable.id, through));
     }
 

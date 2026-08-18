@@ -31,10 +31,31 @@ export type MessageAttemptRecord = {
   consumerName: string | null;
   receiptHandle: string | null;
   receiveCount: number;
-  outcome: "received" | "acked" | "nacked" | "released" | "visibility_extended" | "snoozed" | "escalated";
+  outcome: "received" | "acked" | "nacked" | "released" | "visibility_extended" | "snoozed" | "escalated" | "dead_lettered" | "expired";
   visibleUntil: string | null;
   detail: Record<string, unknown>;
   occurredAt: string;
+};
+
+export type QueueMaintenanceResult = {
+  deadLettered: number;
+  expired: number;
+};
+
+export type DeadLetterMessageRecord = {
+  id: string;
+  originalMessageId: string;
+  queueId: string;
+  eventId: string;
+  routeId: string | null;
+  messageGroupId: string;
+  priority: Priority;
+  receiveCount: number;
+  reason: string;
+  lastError: string | null;
+  enqueuedAt: string;
+  deadLetteredAt: string;
+  event: StoredEvent;
 };
 
 export type QueueStats = {

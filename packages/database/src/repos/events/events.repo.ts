@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, lt, or, sql } from "drizzle-orm";
 import type {
   EventToIngest,
   IngestEventResult,
@@ -12,8 +12,7 @@ import {
   outboxTable,
   sourceCursorsTable,
 } from "../../schemas/events.schema.js";
-
-const EVENTS_LIST_LIMIT = 100;
+import { databaseId, requiredDatabaseId } from "../database-id.js";
 
 export type EventsRepoDependencies = {
   database: Database;
@@ -33,12 +32,25 @@ function resolveEventsChannel(value: string | undefined): string {
 export class EventsRepo {
   constructor(private readonly dependencies: EventsRepoDependencies) {}
 
-  async getEvents(): Promise<StoredEvent[]> {
+  async getEvents(
+    limit = 100,
+    beforeOccurredAt?: string,
+    beforeId?: string,
+  ): Promise<StoredEvent[]> {
+    const parsedId = beforeId === undefined ? undefined : databaseId(beforeId) ?? undefined;
+    const parsedTime = beforeOccurredAt === undefined ? undefined : new Date(beforeOccurredAt);
+    const cursor = parsedId !== undefined && parsedTime !== undefined
+      ? or(
+        lt(eventsTable.occurred_at, parsedTime),
+        and(eq(eventsTable.occurred_at, parsedTime), lt(eventsTable.id, parsedId)),
+      )
+      : undefined;
     const latestEvents = this.dependencies.database
       .select()
       .from(eventsTable)
+      .where(cursor)
       .orderBy(desc(eventsTable.occurred_at), desc(eventsTable.id))
-      .limit(EVENTS_LIST_LIMIT)
+      .limit(limit)
       .as("latest_events");
 
     const rows = await this.dependencies.database
@@ -69,8 +81,8 @@ export class EventsRepo {
   }
 
   async getEventById(id: string): Promise<StoredEvent | null> {
-    const numericId = Number(id);
-    if (!Number.isSafeInteger(numericId) || numericId <= 0) return null;
+    const numericId = databaseId(id);
+    if (numericId === null) return null;
 
     const rows = await this.dependencies.database
       .select({ event: eventsTable, link: eventLinksTable })
@@ -96,7 +108,7 @@ export class EventsRepo {
           correlation_id: event.correlationId,
           causation_event_id: event.causationEventId === null
             ? null
-            : Number(event.causationEventId),
+            : requiredDatabaseId(event.causationEventId, "causationEventId"),
           trace_id: event.traceId,
           detail: event.detail,
           attributes: event.attributes,

@@ -12,6 +12,7 @@ import {
 import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
 import type { ReceivedQueueMessage } from "../queues/queues.types.js";
+import { databaseId, requiredDatabaseId } from "../database-id.js";
 import type {
   StreamMessageRecord,
   TriageActionResult,
@@ -36,11 +37,6 @@ export type StoreClaimInput = {
   title: string;
   decision: TriageDecisionRecord;
 };
-
-function numericId(value: string): number | null {
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
 
 function toTriageItem(row: TriageRow, event: StoredEvent): TriageItemRecord {
   return {
@@ -71,9 +67,9 @@ export class TriageRepo {
   constructor(private readonly dependencies: TriageRepoDependencies) {}
 
   async storeClaim(input: StoreClaimInput): Promise<TriageItemRecord> {
-    const messageId = Number(input.message.id);
-    const queueId = Number(input.message.queueId);
-    const eventId = Number(input.message.eventId);
+    const messageId = requiredDatabaseId(input.message.id, "messageId");
+    const queueId = requiredDatabaseId(input.message.queueId, "queueId");
+    const eventId = requiredDatabaseId(input.message.eventId, "eventId");
 
     return this.dependencies.database.transaction(async (transaction) => {
       const [inbox] = await transaction.insert(consumerInboxTable).values({
@@ -179,23 +175,37 @@ export class TriageRepo {
     });
   }
 
-  async listItems(streamKey: string): Promise<TriageItemRecord[]> {
+  async listItems(
+    streamKey: string,
+    afterId = "0",
+    limit = 100,
+  ): Promise<TriageItemRecord[]> {
+    const parsedAfterId = databaseId(afterId) ?? 0n;
+    const itemIds = await this.dependencies.database
+      .select({ id: triageItemsTable.id })
+      .from(triageItemsTable)
+      .where(and(
+        eq(triageItemsTable.stream_key, streamKey),
+        eq(triageItemsTable.status, "pending"),
+        gt(triageItemsTable.id, parsedAfterId),
+      ))
+      .orderBy(asc(triageItemsTable.id))
+      .limit(limit);
+    if (itemIds.length === 0) return [];
+
     const rows = await this.dependencies.database
       .select({ item: triageItemsTable, event: eventsTable, link: eventLinksTable })
       .from(triageItemsTable)
       .innerJoin(eventsTable, eq(eventsTable.id, triageItemsTable.event_id))
       .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, eventsTable.id))
-      .where(and(
-        eq(triageItemsTable.stream_key, streamKey),
-        eq(triageItemsTable.status, "pending"),
-      ))
+      .where(inArray(triageItemsTable.id, itemIds.map(({ id }) => id)))
       .orderBy(asc(triageItemsTable.id));
 
     const events = new Map(toStoredEvents(rows.map(({ event, link }) => ({
       event,
       link,
     }))).map((event) => [event.id, event]));
-    const items = new Map<number, TriageRow>();
+    const items = new Map<bigint, TriageRow>();
     for (const { item } of rows) items.set(item.id, item);
     return [...items.values()].map((item) => {
       const event = events.get(String(item.event_id));
@@ -293,8 +303,8 @@ export class TriageRepo {
       item: TriageRow,
     ) => Promise<TriageActionResult>,
   ): Promise<TriageActionResult> {
-    const parsed = numericId(itemId);
-    if (!parsed) return "not_found";
+    const parsed = databaseId(itemId);
+    if (parsed === null) return "not_found";
     return this.dependencies.database.transaction(async (transaction) => {
       const [item] = await transaction.select().from(triageItemsTable).where(and(
         eq(triageItemsTable.id, parsed),
@@ -326,7 +336,7 @@ export class TriageRepo {
 
   private async notify(
     transaction: Parameters<Parameters<Database["transaction"]>[0]>[0],
-    streamMessageId: number,
+    streamMessageId: bigint,
   ): Promise<void> {
     await transaction.execute(sql`select pg_notify(
       ${this.dependencies.sseChannel},

@@ -10,10 +10,12 @@ export type {
 } from "./queues.repo.js";
 export type {
   MessageAttemptRecord,
+  DeadLetterMessageRecord,
   Priority,
   QueueMessageRecord,
   QueueRecord,
   QueueStats,
+  QueueMaintenanceResult,
   ReceivedQueueMessage,
   StoredEvent,
 } from "./queues.types.js";

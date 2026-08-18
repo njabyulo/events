@@ -5,8 +5,10 @@ export type EscalationStatus = "pending" | "sending" | "sent" | "failed" | "dism
 export type EscalationRecord = {
   id: string;
   eventId: string;
-  queueId: string;
-  sourceMessageId: string;
+  queueId: string | null;
+  sourceMessageId: string | null;
+  routeId: string | null;
+  targetTestId: string | null;
   reason: string;
   receiveCount: number;
   status: EscalationStatus;

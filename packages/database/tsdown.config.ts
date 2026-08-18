@@ -4,7 +4,6 @@ export default defineConfig({
   entry: {
     escalations: "src/repos/escalations/index.ts",
     events: "src/repos/events/index.ts",
-    outbox: "src/repos/outbox/index.ts",
     queues: "src/repos/queues/index.ts",
     runtime: "src/runtime/index.ts",
     routing: "src/repos/routing/index.ts",

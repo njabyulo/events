@@ -111,7 +111,7 @@ async function createQueueTarget(name: string, queueName = "career") {
   return targetsRepo.createTarget({
     name,
     kind: "queue",
-    config: { queueId: Number(queue.id) },
+    config: { queueId: queue.id },
     enabled: true,
   });
 }
@@ -129,10 +129,10 @@ beforeAll(async () => {
   const database = drizzle({ client: testPool });
   await seedSystemResources(database);
   eventsRepo = createEventsRepo({ database, eventsChannel: "events_ready_test" });
-  routingRepo = createRoutingRepo({ database, sseChannel });
-  secondRoutingRepo = createRoutingRepo({ database, sseChannel });
+  routingRepo = createRoutingRepo({ database, sseChannel, ruleCacheTtlMs: 0 });
+  secondRoutingRepo = createRoutingRepo({ database, sseChannel, ruleCacheTtlMs: 0 });
   rulesRepo = createRulesRepo(database);
-  targetsRepo = createTargetsRepo(database);
+  targetsRepo = createTargetsRepo({ database, sseChannel });
 }, 30_000);
 
 beforeEach(async () => {
@@ -140,6 +140,9 @@ beforeEach(async () => {
     delete from stream_messages;
     delete from triage_items;
     delete from consumer_inbox;
+    delete from escalation_attempts;
+    delete from escalations;
+    delete from dead_letter_messages;
     delete from message_attempts;
     delete from target_tests;
     delete from queue_messages;
@@ -261,6 +264,31 @@ describe("routing coordination and idempotency", () => {
     expect(routes.rows[0]).toEqual({ count: 1 });
   });
 
+  test("stops retrying poison outbox work after the configured attempt budget", async () => {
+    const stored = await eventsRepo.ingestEvent(event());
+    const claimed = await routingRepo.claimNext();
+    expect(claimed?.event.id).toBe(stored.id);
+
+    await expect(routingRepo.fail(
+      stored.id,
+      claimed!.leaseToken,
+      "invalid stored rule",
+      0,
+      1,
+    )).resolves.toBe("dead");
+    await expect(routingRepo.claimNext()).resolves.toBeNull();
+    const outbox = await testPool.query(
+      "select status, attempts, last_error, completed_at is not null as completed from outbox where event_id = $1",
+      [stored.id],
+    );
+    expect(outbox.rows[0]).toEqual({
+      status: "dead",
+      attempts: 1,
+      last_error: "invalid stored rule",
+      completed: true,
+    });
+  });
+
   test("SSE creates a durable route and emits only an ID notification after commit", async () => {
     const target = await targetsRepo.createTarget({
       name: "dashboard.triage",
@@ -319,7 +347,7 @@ describe("routing coordination and idempotency", () => {
     }
   });
 
-  test("SMS routing records durable intent without creating a queue delivery", async () => {
+  test("SMS routing creates a durable escalation without creating a queue delivery", async () => {
     const target = await targetsRepo.createTarget({
       name: "sms.escalation",
       kind: "sms",
@@ -348,13 +376,30 @@ describe("routing coordination and idempotency", () => {
 
     const counts = await testPool.query(`select
       (select count(*)::int from event_routes where event_id = $1 and target_kind = 'sms') as routes,
-      (select count(*)::int from queue_messages where event_id = $1) as queue_messages`,
+      (select count(*)::int from queue_messages where event_id = $1) as queue_messages,
+      (select count(*)::int from escalations where event_id = $1) as escalations`,
     [work!.event.id]);
-    expect(counts.rows[0]).toEqual({ routes: 1, queue_messages: 0 });
+    expect(counts.rows[0]).toEqual({ routes: 1, queue_messages: 0, escalations: 1 });
   });
 });
 
 describe("version, target lifecycle, and replay history", () => {
+  test("records bigint-backed admin snapshots as JSON-safe strings", async () => {
+    const rule = await rulesRepo.createRule({
+      name: "github.audit-delete",
+      pattern: { source: ["github"] },
+      priority: "normal",
+      enabled: true,
+    });
+
+    await expect(rulesRepo.deleteRule(rule.id)).resolves.toBe(true);
+    const audit = await testPool.query(`select before->>'id' as before_id,
+      after->>'id' as after_id
+      from admin_actions
+      where action = 'rule.deleted' and resource_id = $1`, [rule.id]);
+    expect(audit.rows).toEqual([{ before_id: rule.id, after_id: rule.id }]);
+  });
+
   test("a rule edit cannot change the version captured for an in-flight event", async () => {
     const target = await createQueueTarget("career.versioned");
     const rule = await rulesRepo.createRule({
@@ -448,7 +493,7 @@ describe("version, target lifecycle, and replay history", () => {
 
     const personal = (await targetsRepo.listQueues()).find((item) => item.name === "personal")!;
     await targetsRepo.updateTarget(target.id, {
-      config: { queueId: Number(personal.id) },
+      config: { queueId: personal.id },
     });
     await rulesRepo.detachTarget(rule.id, target.id);
     await expect(targetsRepo.deleteTarget(target.id)).resolves.toBe("deleted");
@@ -485,8 +530,14 @@ describe("version, target lifecycle, and replay history", () => {
     const [pinned] = await routingRepo.loadReplayRules(rule.id, 1);
     expect(pinned?.version).toBe(1);
     const decisions = decisionsFor(pinned!);
-    await routingRepo.commitReplayEvent(replay.id, stored.id, decisions);
-    await routingRepo.commitReplayEvent(replay.id, stored.id, decisions);
+    const claimed = await routingRepo.claimReplay(30);
+    expect(claimed?.id).toBe(replay.id);
+    await routingRepo.commitReplayBatch(
+      replay.id,
+      claimed!.leaseToken,
+      [{ eventId: stored.id, decisions }],
+      true,
+    );
 
     const rows = await testPool.query(`select
       (select count(*)::int from event_routes where replay_id = $1) as routes,
@@ -499,16 +550,18 @@ describe("version, target lifecycle, and replay history", () => {
   test("a target test is a durable synthetic delivery with an audit but no event route", async () => {
     const target = await createQueueTarget("career.test");
 
-    const testId = await targetsRepo.scheduleTargetTest(
+    const targetTest = await targetsRepo.scheduleTargetTest(
       target,
       "njabulo",
       "Verify the destination before enabling a rule",
     );
 
     const rows = await testPool.query(`select
-      (select count(*)::int from target_tests where id = $1 and status = 'pending') as tests,
+      (select count(*)::int from target_tests where id = $1 and status = 'completed') as tests,
       (select count(*)::int from admin_actions where resource_id = $2 and action = 'target.test_scheduled') as audits,
-      (select count(*)::int from event_routes) as routes`, [testId, testId]);
-    expect(rows.rows[0]).toEqual({ tests: 1, audits: 1, routes: 0 });
+      (select count(*)::int from event_routes) as routes,
+      (select count(*)::int from queue_messages where message_group_id = 'target-test') as messages`,
+    [targetTest.id, targetTest.id]);
+    expect(rows.rows[0]).toEqual({ tests: 1, audits: 1, routes: 0, messages: 1 });
   });
 });

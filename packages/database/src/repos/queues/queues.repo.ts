@@ -1,17 +1,20 @@
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
   inArray,
   isNotNull,
   isNull,
+  lt,
   sql,
 } from "drizzle-orm";
 import { db, type Database } from "../../client.js";
 import { escalationsTable } from "../../schemas/escalations.schema.js";
 import { eventLinksTable, eventsTable } from "../../schemas/events.schema.js";
 import {
+  deadLetterMessagesTable,
   queueMessagesTable,
   queuesTable,
   targetsTable,
@@ -22,10 +25,14 @@ import type { JsonObject } from "../events/events.types.js";
 import type { Priority, QueueRecord } from "../routing/routing.types.js";
 import type {
   MessageAttemptRecord,
+  DeadLetterMessageRecord,
   QueueMessageRecord,
   QueueStats,
+  QueueMaintenanceResult,
   ReceivedQueueMessage,
 } from "./queues.types.js";
+import { recordAdminAction } from "../admin-actions.js";
+import { databaseId } from "../database-id.js";
 
 type QueueRow = typeof queuesTable.$inferSelect;
 type QueueMessageRow = typeof queueMessagesTable.$inferSelect;
@@ -111,10 +118,10 @@ function toMessage(row: QueueMessageRow): QueueMessageRecord {
 
 function claimedMessage(row: Record<string, unknown>): QueueMessageRow {
   return {
-    id: Number(row.id),
-    queue_id: Number(row.queue_id),
-    event_id: Number(row.event_id),
-    route_id: row.route_id === null ? null : Number(row.route_id),
+    id: BigInt(String(row.id)),
+    queue_id: BigInt(String(row.queue_id)),
+    event_id: BigInt(String(row.event_id)),
+    route_id: row.route_id === null ? null : BigInt(String(row.route_id)),
     message_group_id: String(row.message_group_id),
     priority: String(row.priority),
     visible_at: new Date(String(row.visible_at)),
@@ -141,11 +148,6 @@ function toAttempt(row: MessageAttemptRow): MessageAttemptRecord {
   };
 }
 
-function numericId(value: string): number | null {
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
 export class QueuesRepo {
   constructor(private readonly dependencies: QueueRepoDependencies) {}
 
@@ -157,7 +159,7 @@ export class QueuesRepo {
   }
 
   async getQueue(id: string): Promise<QueueRecord | null> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed) return null;
     const [row] = await this.dependencies.database.select().from(queuesTable)
       .where(and(eq(queuesTable.id, parsed), isNull(queuesTable.deleted_at)))
@@ -173,22 +175,31 @@ export class QueuesRepo {
   }
 
   async createQueue(input: CreateQueueInput): Promise<QueueRecord> {
-    const [row] = await this.dependencies.database.insert(queuesTable).values({
-      name: input.name,
-      fifo: input.fifo,
-      visibility_timeout_seconds: input.visibilityTimeoutSeconds,
-      max_receive_count: input.maxReceiveCount,
-      retention_seconds: input.retentionSeconds,
-      escalate: input.escalate,
-      quiet_hours: input.quietHours,
-      digest_flush_cron: input.digestFlushCron,
-    }).returning();
-    if (!row) throw new Error("Queue insert returned no row");
-    return toQueue(row);
+    return this.dependencies.database.transaction(async (transaction) => {
+      const [row] = await transaction.insert(queuesTable).values({
+        name: input.name,
+        fifo: input.fifo,
+        visibility_timeout_seconds: input.visibilityTimeoutSeconds,
+        max_receive_count: input.maxReceiveCount,
+        retention_seconds: input.retentionSeconds,
+        escalate: input.escalate,
+        quiet_hours: input.quietHours,
+        digest_flush_cron: input.digestFlushCron,
+      }).returning();
+      if (!row) throw new Error("Queue insert returned no row");
+      const queue = toQueue(row);
+      await recordAdminAction(transaction, {
+        action: "queue.created",
+        resourceType: "queue",
+        resourceId: queue.id,
+        after: queue,
+      });
+      return queue;
+    });
   }
 
   async updateQueue(id: string, input: UpdateQueueInput): Promise<QueueRecord | null> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed) return null;
     const updates: Partial<typeof queuesTable.$inferInsert> = {};
     if (input.name !== undefined) updates.name = input.name;
@@ -205,18 +216,34 @@ export class QueuesRepo {
     if (input.digestFlushCron !== undefined) updates.digest_flush_cron = input.digestFlushCron;
     if (Object.keys(updates).length === 0) return this.getQueue(id);
 
-    const [row] = await this.dependencies.database.update(queuesTable).set(updates)
-      .where(and(eq(queuesTable.id, parsed), isNull(queuesTable.deleted_at)))
-      .returning();
-    return row ? toQueue(row) : null;
+    return this.dependencies.database.transaction(async (transaction) => {
+      const [existing] = await transaction.select().from(queuesTable)
+        .where(and(eq(queuesTable.id, parsed), isNull(queuesTable.deleted_at)))
+        .for("update")
+        .limit(1);
+      if (!existing) return null;
+      const [row] = await transaction.update(queuesTable).set(updates)
+        .where(eq(queuesTable.id, parsed))
+        .returning();
+      if (!row) return null;
+      const queue = toQueue(row);
+      await recordAdminAction(transaction, {
+        action: "queue.updated",
+        resourceType: "queue",
+        resourceId: queue.id,
+        before: toQueue(existing),
+        after: queue,
+      });
+      return queue;
+    });
   }
 
   async deleteQueue(id: string): Promise<DeleteQueueResult> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed) return "not_found";
 
     return this.dependencies.database.transaction(async (transaction) => {
-      const [queue] = await transaction.select({ id: queuesTable.id }).from(queuesTable)
+      const [queue] = await transaction.select().from(queuesTable)
         .where(and(eq(queuesTable.id, parsed), isNull(queuesTable.deleted_at)))
         .for("update")
         .limit(1);
@@ -238,13 +265,20 @@ export class QueuesRepo {
 
       await transaction.update(queuesTable).set({ deleted_at: new Date() })
         .where(eq(queuesTable.id, parsed));
+      await recordAdminAction(transaction, {
+        action: "queue.deleted",
+        resourceType: "queue",
+        resourceId: String(parsed),
+        before: toQueue(queue),
+        after: { deleted: true },
+      });
       return "deleted";
     });
   }
 
   async sendMessage(input: SendMessageInput): Promise<QueueMessageRecord | null> {
-    const queueId = numericId(input.queueId);
-    const eventId = numericId(input.eventId);
+    const queueId = databaseId(input.queueId);
+    const eventId = databaseId(input.eventId);
     if (!queueId || !eventId) return null;
 
     return this.dependencies.database.transaction(async (transaction) => {
@@ -273,7 +307,7 @@ export class QueuesRepo {
   }
 
   async receiveMessages(input: ReceiveMessagesInput): Promise<ReceivedQueueMessage[] | null> {
-    const queueId = numericId(input.queueId);
+    const queueId = databaseId(input.queueId);
     if (!queueId) return [];
 
     return this.dependencies.database.transaction(async (transaction) => {
@@ -285,42 +319,50 @@ export class QueuesRepo {
       const visibility = input.visibilityTimeoutSeconds
         ?? queue.visibility_timeout_seconds;
 
-      if (queue.escalate) {
-        const exhaustedResult = await transaction.execute(sql`
-          delete from queue_messages as message
-          where message.id in (
-            select candidate.id
-            from queue_messages as candidate
-            where candidate.queue_id = ${queueId}
-              and candidate.priority = 'urgent'
-              and candidate.receive_count >= ${queue.max_receive_count}
-              and candidate.visible_at <= now()
-            order by candidate.id
-            for update skip locked
-            limit ${QUEUE_MAINTENANCE_BATCH_SIZE}
-          )
-          returning message.*
-        `);
-        const exhausted = exhaustedResult.rows.map((row) => claimedMessage(row));
-        if (exhausted.length > 0) {
-          await transaction.insert(escalationsTable).values(exhausted.map((message) => ({
+      const exhaustedResult = await transaction.execute(sql`
+        delete from queue_messages as message
+        where message.id in (
+          select candidate.id
+          from queue_messages as candidate
+          where candidate.queue_id = ${queueId}
+            and candidate.receive_count >= ${queue.max_receive_count}
+            and candidate.visible_at <= now()
+          order by candidate.id
+          for update skip locked
+          limit ${QUEUE_MAINTENANCE_BATCH_SIZE}
+        )
+        returning message.*
+      `);
+      const exhausted = exhaustedResult.rows.map((row) => claimedMessage(row));
+      if (exhausted.length > 0) {
+        await this.storeDeadLetters(
+          transaction,
+          exhausted,
+          "max_receive_count_exceeded",
+        );
+        const escalated = queue.escalate
+          ? exhausted.filter(({ priority }) => priority === "urgent")
+          : [];
+        if (escalated.length > 0) {
+          await transaction.insert(escalationsTable).values(escalated.map((message) => ({
             event_id: message.event_id,
             queue_id: message.queue_id,
             source_message_id: message.id,
             reason: `urgent message exhausted after ${message.receive_count} receives`,
             receive_count: message.receive_count,
-          }))).onConflictDoNothing({ target: escalationsTable.source_message_id });
-          await transaction.insert(messageAttemptsTable).values(exhausted.map((message) => ({
-            message_id: message.id,
-            queue_id: message.queue_id,
-            event_id: message.event_id,
-            consumer_name: input.consumerName,
-            receipt_handle: message.receipt_handle,
-            receive_count: message.receive_count,
-            outcome: "escalated",
-            detail: { reason: "visibility expired after final receive" },
-          })));
+          }))).onConflictDoNothing();
         }
+        const escalatedIds = new Set(escalated.map(({ id }) => id));
+        await transaction.insert(messageAttemptsTable).values(exhausted.map((message) => ({
+          message_id: message.id,
+          queue_id: message.queue_id,
+          event_id: message.event_id,
+          consumer_name: input.consumerName,
+          receipt_handle: message.receipt_handle,
+          receive_count: message.receive_count,
+          outcome: escalatedIds.has(message.id) ? "escalated" : "dead_lettered",
+          detail: { reason: "visibility expired after final receive" },
+        })));
       }
 
       const result = queue.fifo
@@ -330,11 +372,7 @@ export class QueuesRepo {
             from queue_messages as message
             where message.queue_id = ${queueId}
               and message.visible_at <= now()
-              and not (
-                ${queue.escalate}
-                and message.priority = 'urgent'
-                and message.receive_count >= ${queue.max_receive_count}
-              )
+              and message.receive_count < ${queue.max_receive_count}
               and not exists (
                 select 1
                 from queue_messages as older
@@ -368,11 +406,7 @@ export class QueuesRepo {
             from queue_messages
             where queue_id = ${queueId}
               and visible_at <= now()
-              and not (
-                ${queue.escalate}
-                and priority = 'urgent'
-                and receive_count >= ${queue.max_receive_count}
-              )
+              and receive_count < ${queue.max_receive_count}
             order by visible_at, id
             for update skip locked
             limit ${input.maxMessages}
@@ -482,29 +516,35 @@ export class QueuesRepo {
           .limit(1);
         if (!lease) return false;
 
-        const exhausted = lease.queue.escalate
-          && lease.message.priority === "urgent"
-          && lease.message.receive_count >= lease.queue.max_receive_count;
+        const exhausted = lease.message.receive_count >= lease.queue.max_receive_count;
         if (exhausted) {
-          const reason = `urgent message exhausted after ${lease.message.receive_count} receives`;
-          await transaction.insert(escalationsTable).values({
-            event_id: lease.message.event_id,
-            queue_id: lease.message.queue_id,
-            source_message_id: lease.message.id,
-            reason,
-            receive_count: lease.message.receive_count,
-          }).onConflictDoNothing({ target: escalationsTable.source_message_id });
+          const reason = `message exhausted after ${lease.message.receive_count} receives`;
+          const shouldEscalate = lease.queue.escalate && lease.message.priority === "urgent";
+          if (shouldEscalate) {
+            await transaction.insert(escalationsTable).values({
+              event_id: lease.message.event_id,
+              queue_id: lease.message.queue_id,
+              source_message_id: lease.message.id,
+              reason,
+              receive_count: lease.message.receive_count,
+            }).onConflictDoNothing();
+          }
           const [deleted] = await transaction.delete(queueMessagesTable).where(and(
             eq(queueMessagesTable.id, messageId),
             eq(queueMessagesTable.receipt_handle, input.receiptHandle),
           )).returning();
           if (!deleted) return false;
+          await this.storeDeadLetters(
+            transaction,
+            [{ ...deleted, last_error: input.error }],
+            "max_receive_count_exceeded",
+          );
           await this.recordAttempt(
             transaction,
             deleted,
             input.consumerName,
             input.receiptHandle,
-            "escalated",
+            shouldEscalate ? "escalated" : "dead_lettered",
             { error: input.error, reason },
           );
           return true;
@@ -583,7 +623,7 @@ export class QueuesRepo {
   }
 
   async listAttempts(messageId: string): Promise<MessageAttemptRecord[]> {
-    const parsed = numericId(messageId);
+    const parsed = databaseId(messageId);
     if (!parsed) return [];
     const rows = await this.dependencies.database.select().from(messageAttemptsTable)
       .where(eq(messageAttemptsTable.message_id, parsed))
@@ -591,13 +631,63 @@ export class QueuesRepo {
     return rows.map(toAttempt);
   }
 
+  async listDeadLetters(
+    queueId: string,
+    limit = 100,
+    beforeId?: string,
+  ): Promise<DeadLetterMessageRecord[]> {
+    const parsedQueueId = databaseId(queueId);
+    const parsedBeforeId = beforeId === undefined ? undefined : databaseId(beforeId);
+    if (!parsedQueueId) return [];
+    const conditions = [eq(deadLetterMessagesTable.queue_id, parsedQueueId)];
+    if (parsedBeforeId) conditions.push(lt(deadLetterMessagesTable.id, parsedBeforeId));
+    const deadLetters = await this.dependencies.database.select()
+      .from(deadLetterMessagesTable)
+      .where(and(...conditions))
+      .orderBy(desc(deadLetterMessagesTable.id))
+      .limit(limit);
+    if (deadLetters.length === 0) return [];
+    const eventRows = await this.dependencies.database
+      .select({ event: eventsTable, link: eventLinksTable })
+      .from(eventsTable)
+      .leftJoin(eventLinksTable, eq(eventLinksTable.event_id, eventsTable.id))
+      .where(inArray(
+        eventsTable.id,
+        [...new Set(deadLetters.map(({ event_id }) => event_id))],
+      ));
+    const events = new Map(toStoredEvents(eventRows).map((event) => [event.id, event]));
+    return deadLetters.map((row) => {
+      const event = events.get(String(row.event_id));
+      if (!event) throw new Error(`Dead-letter message ${row.id} has no event`);
+      return {
+        id: String(row.id),
+        originalMessageId: String(row.original_message_id),
+        queueId: String(row.queue_id),
+        eventId: String(row.event_id),
+        routeId: row.route_id === null ? null : String(row.route_id),
+        messageGroupId: row.message_group_id,
+        priority: row.priority as Priority,
+        receiveCount: row.receive_count,
+        reason: row.reason,
+        lastError: row.last_error,
+        enqueuedAt: row.enqueued_at.toISOString(),
+        deadLetteredAt: row.dead_lettered_at.toISOString(),
+        event,
+      };
+    });
+  }
+
   async claimDigestMessages(
     queueId: string,
     visibilityTimeoutSeconds: number,
     consumerName: string,
+    maxMessages = 100,
   ): Promise<ReceivedQueueMessage[] | null> {
-    const parsed = numericId(queueId);
+    const parsed = databaseId(queueId);
     if (!parsed) return null;
+    if (!Number.isSafeInteger(maxMessages) || maxMessages < 1 || maxMessages > 1_000) {
+      throw new RangeError("maxMessages must be between 1 and 1000");
+    }
     return this.dependencies.database.transaction(async (transaction) => {
       const [queue] = await transaction.select().from(queuesTable).where(and(
         eq(queuesTable.id, parsed),
@@ -614,6 +704,7 @@ export class QueuesRepo {
             and visible_at <= now()
           order by visible_at, id
           for update skip locked
+          limit ${maxMessages}
         )
         update queue_messages as message
         set visible_at = now() + (${visibilityTimeoutSeconds} * interval '1 second'),
@@ -662,11 +753,11 @@ export class QueuesRepo {
     consumerName: string,
   ): Promise<boolean> {
     if (messages.length === 0) return true;
-    const ids = messages.map(({ id }) => numericId(id));
+    const ids = messages.map(({ id }) => databaseId(id));
     if (ids.some((id) => id === null)) return false;
     return this.dependencies.database.transaction(async (transaction) => {
       const current = await transaction.select().from(queueMessagesTable).where(and(
-        inArray(queueMessagesTable.id, ids as number[]),
+        inArray(queueMessagesTable.id, ids as bigint[]),
         gt(queueMessagesTable.visible_at, sql`now()`),
       )).for("update");
       const receipts = new Map(messages.map((message) => [message.id, message.receiptHandle]));
@@ -678,7 +769,7 @@ export class QueuesRepo {
         ))
       ) return false;
       const deleted = await transaction.delete(queueMessagesTable)
-        .where(inArray(queueMessagesTable.id, ids as number[]))
+        .where(inArray(queueMessagesTable.id, ids as bigint[]))
         .returning();
       if (deleted.length !== messages.length) {
         throw new Error("Digest ACK lost a locked queue message");
@@ -698,7 +789,7 @@ export class QueuesRepo {
   }
 
   async getStats(queueId: string): Promise<QueueStats | null> {
-    const parsed = numericId(queueId);
+    const parsed = databaseId(queueId);
     if (!parsed) return null;
     const result = await this.dependencies.database.execute(sql`
       select q.id as queue_id,
@@ -732,6 +823,44 @@ export class QueuesRepo {
         ? new Date(row.oldest_visible_at).toISOString()
         : null,
     };
+  }
+
+  async runMaintenance(
+    batchSize = QUEUE_MAINTENANCE_BATCH_SIZE,
+  ): Promise<QueueMaintenanceResult> {
+    if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 1_000) {
+      throw new RangeError("batchSize must be between 1 and 1000");
+    }
+    return this.dependencies.database.transaction(async (transaction) => {
+      const result = await transaction.execute(sql`
+        delete from queue_messages as message
+        where message.id in (
+          select candidate.id
+          from queue_messages as candidate
+          inner join queues as queue on queue.id = candidate.queue_id
+          where candidate.enqueued_at
+            + (queue.retention_seconds * interval '1 second') <= now()
+          order by candidate.enqueued_at, candidate.id
+          for update of candidate skip locked
+          limit ${batchSize}
+        )
+        returning message.*
+      `);
+      const expired = result.rows.map((row) => claimedMessage(row));
+      if (expired.length === 0) return { deadLettered: 0, expired: 0 };
+      await this.storeDeadLetters(transaction, expired, "retention_expired");
+      await transaction.insert(messageAttemptsTable).values(expired.map((message) => ({
+        message_id: message.id,
+        queue_id: message.queue_id,
+        event_id: message.event_id,
+        consumer_name: "queue-maintenance",
+        receipt_handle: message.receipt_handle,
+        receive_count: message.receive_count,
+        outcome: "expired",
+        detail: { reason: "retention_expired" },
+      })));
+      return { deadLettered: expired.length, expired: expired.length };
+    });
   }
 
   private async reschedule(
@@ -794,18 +923,43 @@ export class QueuesRepo {
     });
   }
 
+  private async storeDeadLetters(
+    transaction: DatabaseTransaction,
+    messages: QueueMessageRow[],
+    reason: string,
+  ): Promise<void> {
+    if (messages.length === 0) return;
+    await transaction.insert(deadLetterMessagesTable).values(messages.map((message) => ({
+      original_message_id: message.id,
+      queue_id: message.queue_id,
+      event_id: message.event_id,
+      route_id: message.route_id,
+      message_group_id: message.message_group_id,
+      priority: message.priority,
+      receive_count: message.receive_count,
+      reason,
+      last_error: message.last_error,
+      enqueued_at: message.enqueued_at,
+    }))).onConflictDoNothing({
+      target: [
+        deadLetterMessagesTable.queue_id,
+        deadLetterMessagesTable.original_message_id,
+      ],
+    });
+  }
+
   private async withActiveLease<T>(
     queueId: string,
     messageId: string,
     receiptHandle: string,
     operation: (
       transaction: DatabaseTransaction,
-      numericQueueId: number,
-      numericMessageId: number,
+      numericQueueId: bigint,
+      numericMessageId: bigint,
     ) => Promise<T>,
   ): Promise<T | false> {
-    const numericQueueId = numericId(queueId);
-    const numericMessageId = numericId(messageId);
+    const numericQueueId = databaseId(queueId);
+    const numericMessageId = databaseId(messageId);
     if (!numericQueueId || !numericMessageId || !receiptHandle) return false;
     return this.dependencies.database.transaction((transaction) => operation(
       transaction,

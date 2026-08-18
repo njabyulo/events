@@ -12,7 +12,7 @@ import {
 import { eventsTable } from "./events.schema.js";
 
 export const threadsTable = pgTable("threads", {
-  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  id: bigint("id", { mode: "bigint" }).primaryKey().generatedAlwaysAsIdentity(),
   thread_key: text().notNull(),
   domain: text().notNull(),
   priority: text().notNull(),
@@ -43,13 +43,14 @@ export const threadsTable = pgTable("threads", {
   ),
   index("threads_status_idx").on(table.status, table.last_event_at),
   index("threads_domain_idx").on(table.domain, table.last_event_at),
+  index("threads_last_event_idx").on(table.last_event_at.desc(), table.id.desc()),
 ]);
 
 export const threadMessagesTable = pgTable("thread_messages", {
-  thread_id: bigint("thread_id", { mode: "number" })
+  thread_id: bigint("thread_id", { mode: "bigint" })
     .notNull()
     .references(() => threadsTable.id),
-  event_id: bigint("event_id", { mode: "number" })
+  event_id: bigint("event_id", { mode: "bigint" })
     .notNull()
     .references(() => eventsTable.id),
   added_at: timestamp({ withTimezone: true }).notNull().defaultNow(),

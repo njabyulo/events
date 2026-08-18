@@ -12,6 +12,8 @@ import type {
   RuleRecord,
   RuleVersionRecord,
 } from "../routing/routing.types.js";
+import { recordAdminAction } from "../admin-actions.js";
+import { databaseId } from "../database-id.js";
 
 type RuleRow = typeof rulesTable.$inferSelect;
 type RuleVersionRow = typeof ruleVersionsTable.$inferSelect;
@@ -58,11 +60,11 @@ function toRule(
 type RuleWithTargetRow = {
   rule: RuleRow;
   version: RuleVersionRow;
-  targetId: number | null;
+  targetId: bigint | null;
 };
 
 function toRules(rows: RuleWithTargetRow[]): RuleRecord[] {
-  const records = new Map<number, RuleRecord>();
+  const records = new Map<bigint, RuleRecord>();
   for (const { rule, version, targetId } of rows) {
     const record = records.get(rule.id) ?? toRule(rule, version);
     if (targetId !== null) record.targetIds.push(String(targetId));
@@ -94,8 +96,8 @@ export class RulesRepo {
   }
 
   async getRule(id: string): Promise<RuleRecord | null> {
-    const numericId = Number(id);
-    if (!Number.isSafeInteger(numericId) || numericId <= 0) return null;
+    const numericId = databaseId(id);
+    if (numericId === null) return null;
 
     const rows = await this.database
       .select({
@@ -116,8 +118,8 @@ export class RulesRepo {
   }
 
   async getRuleVersion(id: string, version: number): Promise<RuleVersionRecord | null> {
-    const numericId = Number(id);
-    if (!Number.isSafeInteger(numericId) || numericId <= 0) return null;
+    const numericId = databaseId(id);
+    if (numericId === null) return null;
 
     const [row] = await this.database
       .select()
@@ -132,8 +134,8 @@ export class RulesRepo {
   }
 
   async listRuleVersions(id: string): Promise<RuleVersionRecord[]> {
-    const numericId = Number(id);
-    if (!Number.isSafeInteger(numericId) || numericId <= 0) return [];
+    const numericId = databaseId(id);
+    if (numericId === null) return [];
 
     const rows = await this.database
       .select()
@@ -159,14 +161,20 @@ export class RulesRepo {
         priority: input.priority,
       }).returning();
       if (!version) throw new Error("Rule version insert returned no row");
-
-      return toRule(rule, version, []);
+      const created = toRule(rule, version, []);
+      await recordAdminAction(transaction, {
+        action: "rule.created",
+        resourceType: "rule",
+        resourceId: created.id,
+        after: created,
+      });
+      return created;
     });
   }
 
   async updateRule(id: string, input: UpdateRuleInput): Promise<RuleRecord | null> {
-    const numericId = Number(id);
-    if (!Number.isSafeInteger(numericId) || numericId <= 0) return null;
+    const numericId = databaseId(id);
+    if (numericId === null) return null;
 
     return this.database.transaction(async (transaction) => {
       const [existing] = await transaction
@@ -212,33 +220,53 @@ export class RulesRepo {
         .select({ targetId: ruleTargetsTable.target_id })
         .from(ruleTargetsTable)
         .where(eq(ruleTargetsTable.rule_id, numericId));
-      return toRule(
+      const updated = toRule(
         updatedRule,
         selectedVersion,
         attachments.map(({ targetId }) => String(targetId)),
       );
+      await recordAdminAction(transaction, {
+        action: "rule.updated",
+        resourceType: "rule",
+        resourceId: updated.id,
+        before: toRule(existing.rule, existing.version),
+        after: updated,
+      });
+      return updated;
     });
   }
 
   async deleteRule(id: string): Promise<boolean> {
-    const numericId = Number(id);
-    if (!Number.isSafeInteger(numericId) || numericId <= 0) return false;
+    const numericId = databaseId(id);
+    if (numericId === null) return false;
 
-    const [deleted] = await this.database.update(rulesTable).set({
-      enabled: false,
-      deleted_at: new Date(),
-      updated_at: new Date(),
-    }).where(and(eq(rulesTable.id, numericId), isNull(rulesTable.deleted_at)))
-      .returning({ id: rulesTable.id });
-    return deleted !== undefined;
+    return this.database.transaction(async (transaction) => {
+      const [existing] = await transaction.select().from(rulesTable)
+        .where(and(eq(rulesTable.id, numericId), isNull(rulesTable.deleted_at)))
+        .for("update")
+        .limit(1);
+      if (!existing) return false;
+      const [deleted] = await transaction.update(rulesTable).set({
+        enabled: false,
+        deleted_at: new Date(),
+        updated_at: new Date(),
+      }).where(eq(rulesTable.id, numericId)).returning();
+      if (!deleted) return false;
+      await recordAdminAction(transaction, {
+        action: "rule.deleted",
+        resourceType: "rule",
+        resourceId: String(numericId),
+        before: existing,
+        after: deleted,
+      });
+      return true;
+    });
   }
 
   async attachTarget(ruleId: string, targetId: string): Promise<boolean> {
-    const numericRuleId = Number(ruleId);
-    const numericTargetId = Number(targetId);
-    if (!Number.isSafeInteger(numericRuleId) || !Number.isSafeInteger(numericTargetId)) {
-      return false;
-    }
+    const numericRuleId = databaseId(ruleId);
+    const numericTargetId = databaseId(targetId);
+    if (numericRuleId === null || numericTargetId === null) return false;
 
     return this.database.transaction(async (transaction) => {
       const [pair] = await transaction
@@ -256,26 +284,40 @@ export class RulesRepo {
         .limit(1);
       if (!pair) return false;
 
-      await transaction.insert(ruleTargetsTable).values({
+      const [inserted] = await transaction.insert(ruleTargetsTable).values({
         rule_id: pair.ruleId,
         target_id: pair.targetId,
-      }).onConflictDoNothing();
+      }).onConflictDoNothing().returning({ targetId: ruleTargetsTable.target_id });
+      if (!inserted) return true;
+      await recordAdminAction(transaction, {
+        action: "rule.target_attached",
+        resourceType: "rule",
+        resourceId: String(pair.ruleId),
+        after: { targetId: String(pair.targetId) },
+      });
       return true;
     });
   }
 
   async detachTarget(ruleId: string, targetId: string): Promise<boolean> {
-    const numericRuleId = Number(ruleId);
-    const numericTargetId = Number(targetId);
-    if (!Number.isSafeInteger(numericRuleId) || !Number.isSafeInteger(numericTargetId)) {
-      return false;
-    }
+    const numericRuleId = databaseId(ruleId);
+    const numericTargetId = databaseId(targetId);
+    if (numericRuleId === null || numericTargetId === null) return false;
 
-    const [deleted] = await this.database.delete(ruleTargetsTable).where(and(
-      eq(ruleTargetsTable.rule_id, numericRuleId),
-      eq(ruleTargetsTable.target_id, numericTargetId),
-    )).returning({ ruleId: ruleTargetsTable.rule_id });
-    return deleted !== undefined;
+    return this.database.transaction(async (transaction) => {
+      const [deleted] = await transaction.delete(ruleTargetsTable).where(and(
+        eq(ruleTargetsTable.rule_id, numericRuleId),
+        eq(ruleTargetsTable.target_id, numericTargetId),
+      )).returning({ ruleId: ruleTargetsTable.rule_id });
+      if (!deleted) return false;
+      await recordAdminAction(transaction, {
+        action: "rule.target_detached",
+        resourceType: "rule",
+        resourceId: String(numericRuleId),
+        before: { targetId: String(numericTargetId) },
+      });
+      return true;
+    });
   }
 }
 

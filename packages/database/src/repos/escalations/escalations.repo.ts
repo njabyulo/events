@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { db, type Database } from "../../client.js";
 import {
   escalationAttemptsTable,
@@ -7,8 +7,10 @@ import {
 } from "../../schemas/escalations.schema.js";
 import { eventLinksTable, eventsTable } from "../../schemas/events.schema.js";
 import { adminActionsTable } from "../../schemas/routing.schema.js";
+import { targetTestsTable } from "../../schemas/routing.schema.js";
 import { toStoredEvents } from "../events/events.mapper.js";
 import type { StoredEvent } from "../events/events.types.js";
+import { databaseId } from "../database-id.js";
 import type {
   ClaimedEscalation,
   EscalationActionResult,
@@ -22,17 +24,14 @@ type AttemptRow = typeof escalationAttemptsTable.$inferSelect;
 type DatabaseTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type QueryExecutor = Database | DatabaseTransaction;
 
-function numericId(value: string): number | null {
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
 function toRecord(row: EscalationRow, event: StoredEvent): EscalationRecord {
   return {
     id: String(row.id),
     eventId: String(row.event_id),
-    queueId: String(row.queue_id),
-    sourceMessageId: String(row.source_message_id),
+    queueId: row.queue_id === null ? null : String(row.queue_id),
+    sourceMessageId: row.source_message_id === null ? null : String(row.source_message_id),
+    routeId: row.route_id === null ? null : String(row.route_id),
+    targetTestId: row.target_test_id === null ? null : String(row.target_test_id),
     reason: row.reason,
     receiveCount: row.receive_count,
     status: row.status as EscalationRecord["status"],
@@ -65,14 +64,17 @@ function toAttempt(row: AttemptRow): EscalationAttemptRecord {
 export class EscalationsRepo {
   constructor(private readonly database: Database = db) {}
 
-  async list(): Promise<EscalationRecord[]> {
+  async list(limit = 100, beforeId?: string): Promise<EscalationRecord[]> {
+    const cursor = beforeId === undefined ? undefined : databaseId(beforeId);
     const rows = await this.database.select().from(escalationsTable)
-      .orderBy(asc(escalationsTable.id));
+      .where(cursor === undefined ? undefined : lt(escalationsTable.id, cursor ?? 0n))
+      .orderBy(desc(escalationsTable.id))
+      .limit(limit);
     return this.hydrate(this.database, rows);
   }
 
   async listAttempts(escalationId: string): Promise<EscalationAttemptRecord[]> {
-    const id = numericId(escalationId);
+    const id = databaseId(escalationId);
     if (!id) return [];
     const rows = await this.database.select().from(escalationAttemptsTable)
       .where(eq(escalationAttemptsTable.escalation_id, id))
@@ -109,7 +111,7 @@ export class EscalationsRepo {
       const raw = result.rows[0];
       if (!raw) return null;
       const [row] = await transaction.select().from(escalationsTable)
-        .where(eq(escalationsTable.id, Number(raw.id)))
+        .where(eq(escalationsTable.id, BigInt(String(raw.id))))
         .limit(1);
       if (!row) throw new Error("Claimed escalation disappeared");
       const [record] = await this.hydrate(transaction, [row]);
@@ -123,7 +125,7 @@ export class EscalationsRepo {
     leaseToken: string,
     limits: { perHour: number; perDay: number; maxAttempts: number },
   ): Promise<SendCapacityReservation> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed || !leaseToken) return { status: "lease_lost" };
 
     return this.database.transaction(async (transaction) => {
@@ -201,6 +203,14 @@ export class EscalationsRepo {
         eq(escalationsTable.lease_token, leaseToken),
       )).returning();
       if (!updated) return false;
+      if (row.target_test_id !== null) {
+        await transaction.update(targetTestsTable).set({
+          status: "completed",
+          completed_at: new Date(),
+          updated_at: new Date(),
+          last_error: null,
+        }).where(eq(targetTestsTable.id, row.target_test_id));
+      }
       await transaction.insert(escalationAttemptsTable).values({
         escalation_id: row.id,
         attempt_number: row.attempt_count,
@@ -232,6 +242,14 @@ export class EscalationsRepo {
         eq(escalationsTable.lease_token, leaseToken),
       )).returning();
       if (!updated) return false;
+      if (!input.retry && row.target_test_id !== null) {
+        await transaction.update(targetTestsTable).set({
+          status: "failed",
+          completed_at: new Date(),
+          updated_at: new Date(),
+          last_error: input.error,
+        }).where(eq(targetTestsTable.id, row.target_test_id));
+      }
       await transaction.insert(escalationAttemptsTable).values({
         escalation_id: row.id,
         attempt_number: row.attempt_count,
@@ -271,7 +289,7 @@ export class EscalationsRepo {
   }
 
   async dismiss(id: string, actor: string, reason: string): Promise<EscalationActionResult> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed) return "not_found";
     return this.database.transaction(async (transaction) => {
       const [current] = await transaction.select().from(escalationsTable)
@@ -293,7 +311,7 @@ export class EscalationsRepo {
   }
 
   async retry(id: string, actor: string, reason: string): Promise<EscalationActionResult> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed) return "not_found";
     return this.database.transaction(async (transaction) => {
       const [current] = await transaction.select().from(escalationsTable)
@@ -317,7 +335,7 @@ export class EscalationsRepo {
     leaseToken: string,
     operation: (transaction: DatabaseTransaction, row: EscalationRow) => Promise<boolean>,
   ): Promise<boolean> {
-    const parsed = numericId(id);
+    const parsed = databaseId(id);
     if (!parsed || !leaseToken) return false;
     return this.database.transaction(async (transaction) => {
       const [row] = await transaction.select().from(escalationsTable).where(and(
